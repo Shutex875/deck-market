@@ -1,0 +1,165 @@
+export type Rarity = 'Common' | 'Rare' | 'Epic' | 'Legendary' | 'Champion';
+
+export interface CardData {
+  id: string;
+  name: string;
+  rarity: Rarity;
+  file: string;            // имя файла в /cards (без расширения)
+  evoFile?: string;        // имя файла в /cards/Evo (если есть эволюция)
+  heroFile?: string;       // имя файла в /cards/Hero (если есть геройская версия)
+  champion?: boolean;      // true для чемпионов
+}
+
+export const rarityColors: Record<Rarity, string> = {
+  Common: 'border-gray-400',
+  Rare: 'border-blue-500',
+  Epic: 'border-purple-600',
+  Legendary: 'border-orange-500',
+  Champion: 'border-red-600',
+};
+
+export const ALL_CARDS_DATA: CardData[] = [
+  // ===== Common =====
+  { id: 'Skeleton', name: 'Скелет', rarity: 'Common', file: 'Skellies', evoFile: 'Skellies' },
+  { id: 'Fire Spirit', name: 'Огненный дух', rarity: 'Common', file: 'FireSpirit' },
+  { id: 'Ice Spirit', name: 'Ледяной дух', rarity: 'Common', file: 'IceSpirit', evoFile: 'IceSpirit' },
+  { id: 'Electro Spirit', name: 'Электрический дух', rarity: 'Common', file: 'ElectroSpirit' },
+  { id: 'Bats', name: 'Летучие мыши', rarity: 'Common', file: 'Bats', evoFile: 'Bats' },
+  { id: 'Bomber', name: 'Подрывник', rarity: 'Common', file: 'Bomber', evoFile: 'Bomber' },
+  { id: 'Berserker', name: 'Берсеркша', rarity: 'Common', file: 'Berserker' },
+  { id: 'Zap', name: 'Разряд', rarity: 'Common', file: 'Zap', evoFile: 'Zap' },
+  { id: 'Giant Snowball', name: 'Гигантский снежок', rarity: 'Common', file: 'Snowball', evoFile: 'Snowball' },
+  { id: 'Goblins', name: 'Гоблины', rarity: 'Common', file: 'Gobs', heroFile: 'Gobs' },
+  { id: 'Spear Goblins', name: 'Гоблины-копейщики', rarity: 'Common', file: 'SpearGobs' },
+  { id: 'Goblin Gang', name: 'Банда гоблинов', rarity: 'Common', file: 'GobGang' },
+  { id: 'Minions', name: 'Миньоны', rarity: 'Common', file: 'Minions' },
+  { id: 'Archers', name: 'Лучницы', rarity: 'Common', file: 'Archers', evoFile: 'Archers' },
+  { id: 'Arrows', name: 'Стрелы', rarity: 'Common', file: 'Arrows' },
+  { id: 'Knight', name: 'Рыцарь', rarity: 'Common', file: 'Knight', evoFile: 'Knight', heroFile: 'Knight'},
+  { id: 'Firecracker', name: 'Огненная лучница', rarity: 'Common', file: 'Firecracker', evoFile: 'Firecracker' },
+  { id: 'Cannon', name: 'Пушка', rarity: 'Common', file: 'Cannon', evoFile: 'Cannon' },
+  { id: 'RoyalDelivery', name: 'Королевская почта', rarity: 'Common', file: 'RoyalDelivery' },
+  { id: 'Skeleton Barrel', name: 'Бочка со скелетами', rarity: 'Common', file: 'SkellyBarrel', evoFile: 'SkellyBarrel' },
+  { id: 'Skeleton Dragons', name: 'Костяные драконы', rarity: 'Common', file: 'SkeletonDragons' },
+  { id: 'Tesla', name: 'Тесла', rarity: 'Common', file: 'Tesla', evoFile: 'Tesla' },
+  { id: 'Mortar', name: 'Мортира', rarity: 'Common', file: 'Mortar', evoFile: 'Mortar' },
+  { id: 'Rascals', name: 'Разбойники', rarity: 'Common', file: 'Rascals' },
+  { id: 'Barbarians', name: 'Варвары', rarity: 'Common', file: 'Barbs', evoFile: 'Barbs' },
+  { id: 'Horde', name: 'Орда миньёнов', rarity: 'Common', file: 'Horde', evoFile: 'Horde' },
+  { id: 'Elite Barbarians', name: 'Элитные варвары', rarity: 'Common', file: 'eBarbs' },
+  { id: 'Royal Giant', name: 'Королевский гигант', rarity: 'Common', file: 'RG', evoFile: 'RG' },
+  { id: 'Royal Recruits', name: 'Королевские рекруты', rarity: 'Common', file: 'RoyalRecruits', evoFile: 'RoyalRecruits' },
+
+
+  // ===== Rare =====
+  { id: 'Heal Spirit', name: 'Дух исцеления', rarity: 'Rare', file: 'HealSpirit' },
+  { id: 'Suspicious Bush', name: 'Подозрительный куст', rarity: 'Rare', file: 'SuspiciousBush' },
+  { id: 'Ice Golem', name: 'Ледяной голем', rarity: 'Rare', file: 'IceGolem', heroFile: 'IceGolem' },
+  { id: 'Dart Goblin', name: 'Гоблин с дротиками', rarity: 'Rare', file: 'DartGob', evoFile: 'DartGob' },
+  { id: 'Mega Minion', name: 'Мегаминьон', rarity: 'Rare', file: 'MM', heroFile: 'MM' },
+  { id: 'Tombstone', name: 'Надгробие', rarity: 'Rare', file: 'Tombstone', heroFile: 'Tombstone' },
+  { id: 'Elixir Golem', name: 'Эликсирный голем', rarity: 'Rare', file: 'ElixirGolem' },
+  { id: 'Earthquake', name: 'Землетрясение', rarity: 'Rare', file: 'Earthquake' },
+  { id: 'Mini PEKKA', name: 'Мини-П.Е.К.К.А', rarity: 'Rare', file: 'MP', heroFile: 'MP' },
+  { id: 'Musketeer', name: 'Мушкетер', rarity: 'Rare', file: 'Musk', evoFile: 'Musk', heroFile: 'Musk' },
+  { id: 'Valkyrie', name: 'Валькирия', rarity: 'Rare', file: 'Valk', evoFile: 'Valk' },
+  { id: 'Battle Healer', name: 'Целительница-воин', rarity: 'Rare', file: 'BattleHealer' },
+  { id: 'Battle Ram', name: 'Боевой таран', rarity: 'Rare', file: 'Ram', evoFile: 'Ram' },
+  { id: 'Bomb Tower', name: 'Башня-бомбежка', rarity: 'Rare', file: 'BombTower' },
+  { id: 'Goblin Demolisher', name: 'Гоблин-подрывник', rarity: 'Rare', file: 'GoblinDemolisher' },
+  { id: 'Fireball', name: 'Огненный шар', rarity: 'Rare', file: 'Fireball' },
+  { id: 'Goblin Cage', name: 'Клетка с гоблином', rarity: 'Rare', file: 'GoblinCage', evoFile: 'GoblinCage' },
+  { id: 'Goblin Hut', name: 'Хижина гоблинов', rarity: 'Rare', file: 'GobHut' },
+  { id: 'Zappies', name: 'Зэппи', rarity: 'Rare', file: 'Zappies' },
+  { id: 'Hog Rider', name: 'Всадник на кабане', rarity: 'Rare', file: 'Hog' },
+  { id: 'Flying Machine', name: 'Летучка', rarity: 'Rare', file: 'FlyingMachine' },
+  { id: 'Furnace', name: 'Печь', rarity: 'Rare', file: 'Furnace', evoFile: 'Furnace' },
+  { id: 'Wizard', name: 'Колдун', rarity: 'Rare', file: 'Wiz', evoFile: 'Wiz', heroFile: 'Wiz' },
+  { id: 'Giant', name: 'Гигант', rarity: 'Rare', file: 'Giant', heroFile: 'Giant' },
+  { id: 'Royal Hogs', name: 'Королевские кабаны', rarity: 'Rare', file: 'RoyalHogs', evoFile: 'RoyalHogs' },
+  { id: 'Inferno Tower', name: 'Адская башня', rarity: 'Rare', file: 'Inferno' },
+  { id: 'Barbarian Hut', name: 'Хижина варваров', rarity: 'Rare', file: 'BarbHut' },
+  { id: 'Elixir Collector', name: 'Сборщик эликсира', rarity: 'Rare', file: 'Pump' },
+  { id: 'Rocket', name: 'Ракета', rarity: 'Rare', file: 'Rocket' },
+  { id: 'Three Musketeers', name: 'Три мушкетера', rarity: 'Rare', file: '3M' },
+
+  // ===== Epic =====
+  { id: 'Mirror', name: 'Зеркало', rarity: 'Epic', file: 'Mirror' },
+  { id: 'Barbarian Barrel', name: 'Бочка с варварами', rarity: 'Epic', file: 'BarbBarrel', heroFile: 'BarbBarrel' },
+  { id: 'Rage', name: 'Ярость', rarity: 'Epic', file: 'Rage' },
+  { id: 'Goblin Curse', name: 'Проклятие гоблинов', rarity: 'Epic', file: 'GoblinCurse' },
+  { id: 'Wall Breakers', name: 'Стенобои', rarity: 'Epic', file: 'WallBreakers', evoFile: 'WallBreakers' },
+  { id: 'Goblin Barrel', name: 'Гоблинская бочка', rarity: 'Epic', file: 'Barrel', evoFile: 'Barrel' },
+  { id: 'Tornado', name: 'Торнадо', rarity: 'Epic', file: 'Tornado' },
+  { id: 'Vines', name: 'Лоза', rarity: 'Epic', file: 'Vines' },
+  { id: 'Void', name: 'Бездна', rarity: 'Epic', file: 'Void' },
+  { id: 'Clone', name: 'Клон', rarity: 'Epic', file: 'Clone' },
+  { id: 'Guards', name: 'Стражи', rarity: 'Epic', file: 'Guards' },
+  { id: 'Skeleton Army', name: 'Армия скелетов', rarity: 'Epic', file: 'Skarmy', evoFile: 'Skarmy' },
+  { id: 'Freeze', name: 'Заморозка', rarity: 'Epic', file: 'Freeze' },
+  { id: 'Poison', name: 'Яд', rarity: 'Epic', file: 'Poison' },
+  { id: 'Goblin Drill', name: 'Гоблинский бур', rarity: 'Epic', file: 'GoblinDrill', evoFile: 'GoblinDrill' },
+  { id: 'Dark Prince', name: 'Тёмный принц', rarity: 'Epic', file: 'DarkPrince', heroFile: 'DarkPrince' },
+  { id: 'Hunter', name: 'Охотник', rarity: 'Epic', file: 'Hunter', evoFile: 'Hunter' },
+  { id: 'Rune Giant', name: 'Руническая гигантша', rarity: 'Epic', file: 'RuneGiant' },
+  { id: 'Baby Dragon', name: 'Дракончик', rarity: 'Epic', file: 'BabyD', evoFile: 'BabyD' },
+  { id: 'Balloon', name: 'Шар', rarity: 'Epic', file: 'Balloon', heroFile: 'Balloon' },
+  { id: 'Bowler', name: 'Вышибала', rarity: 'Epic', file: 'Bowler', heroFile: 'Bowler' },
+  { id: 'Cannon Cart', name: 'Повозка с пушкой', rarity: 'Epic', file: 'CannonCart' },
+  { id: 'Electro Dragon', name: 'Электродракон', rarity: 'Epic', file: 'eDragon', evoFile: 'eDragon' },
+  { id: 'Executioner', name: 'Палач', rarity: 'Epic', file: 'Exe', evoFile: 'Exe' },
+  { id: 'Prince', name: 'Принц', rarity: 'Epic', file: 'Prince' },
+  { id: 'Witch', name: 'Ведьма', rarity: 'Epic', file: 'Witch', evoFile: 'Witch' },
+  { id: 'Giant Skeleton', name: 'Гигантский скелет', rarity: 'Epic', file: 'GiantSkelly' },
+  { id: 'Goblin Giant', name: 'Гоблин-гигант', rarity: 'Epic', file: 'GobGiant', evoFile: 'GobGiant' },
+  { id: 'X-Bow', name: 'Арбалет', rarity: 'Epic', file: 'XBow' },
+  { id: 'Lightning', name: 'Молния', rarity: 'Epic', file: 'Lightning' },
+  { id: 'PEKKA', name: 'П.Е.К.К.А.', rarity: 'Epic', file: 'PEKKA', evoFile: 'PEKKA' },
+  { id: 'Electro Giant', name: 'Электрогигант', rarity: 'Epic', file: 'ElectroGiant' },
+  { id: 'Golem', name: 'Голем', rarity: 'Epic', file: 'Golem' },
+
+  // ===== Legendary =====
+  { id: 'The Log', name: 'Бревно', rarity: 'Legendary', file: 'Log' },
+  { id: 'Miner', name: 'Шахтер', rarity: 'Legendary', file: 'Miner' },
+  { id: 'Bandit', name: 'Бандитка', rarity: 'Legendary', file: 'Bandit' },
+  { id: 'Fisherman', name: 'Рыбак', rarity: 'Legendary', file: 'Fisherman' },
+  { id: 'Ice Wizard', name: 'Ледяной колдун', rarity: 'Legendary', file: 'IceWiz' },
+  { id: 'Princess', name: 'Принцесса', rarity: 'Legendary', file: 'Princess', evoFile: 'Princess' },
+  { id: 'Royal Ghost', name: 'Королевский призрак', rarity: 'Legendary', file: 'Ghost', evoFile: 'Ghost' },
+  { id: 'Lumberjack', name: 'Дровосек', rarity: 'Legendary', file: 'Lumber', evoFile: 'Lumber' },
+  { id: 'Magic Archer', name: 'Магический лучник', rarity: 'Legendary', file: 'MagicArcher', heroFile: 'MagicArcher' },
+  { id: 'Electro Wizard', name: 'Громовержец', rarity: 'Legendary', file: 'eWiz' },
+  { id: 'Inferno Dragon', name: 'Пламенный дракон', rarity: 'Legendary', file: 'InfernoD', evoFile: 'InfernoD' },
+  { id: 'Mother Witch', name: 'Ведьмина бабушка', rarity: 'Legendary', file: 'MotherWitch' },
+  { id: 'Night Witch', name: 'Ночная ведьма', rarity: 'Legendary', file: 'NightWitch' },
+  { id: 'Phoenix', name: 'Феникс', rarity: 'Legendary', file: 'Phoenix' },
+  { id: 'Ronin', name: 'Ронин', rarity: 'Legendary', file: 'Ronin' },
+  { id: 'Goblin Machine', name: 'Гоблинская машина', rarity: 'Legendary', file: 'GoblinMachine' },
+  { id: 'Ram Rider', name: 'Всадница на баране', rarity: 'Legendary', file: 'RamRider' },
+  { id: 'Graveyard', name: 'Кладбище', rarity: 'Legendary', file: 'Graveyard' },
+  { id: 'Spirit Empress', name: 'Императрица духов', rarity: 'Legendary', file: 'SpiritEmpress' },
+  { id: 'Sparky', name: 'Спарки', rarity: 'Legendary', file: 'Sparky' },
+  { id: 'Lava Hound', name: 'Адская гончая', rarity: 'Legendary', file: 'Lava' },
+  { id: 'Mega Knight', name: 'Мегарыцарь', rarity: 'Legendary', file: 'MegaKnight', evoFile: 'MegaKnight' },
+
+
+
+  // ===== Champion =====
+
+  { id: 'Little Prince', name: 'Маленький принц', rarity: 'Champion', file: 'LittlePrince', champion: true },
+  { id: 'Skeleton King', name: 'Король скелетов', rarity: 'Champion', file: 'SkeletonKing', champion: true },
+  { id: 'Golden Knight', name: 'Золотой рыцарь', rarity: 'Champion', file: 'GoldenKnight', champion: true },
+  { id: 'Mighty Miner', name: 'Шустрый шахтер', rarity: 'Champion', file: 'MightyMiner', champion: true },
+  { id: 'Archer Queen', name: 'Королева лучниц', rarity: 'Champion', file: 'ArcherQueen', champion: true },
+  { id: 'Goblinstein', name: 'Гоблинштейн', rarity: 'Champion', file: 'Goblinstein', champion: true },
+  { id: 'Monk', name: 'Монах', rarity: 'Champion', file: 'Monk', champion: true },
+  { id: 'Boss Bandit', name: 'Главная бандитка', rarity: 'Champion', file: 'BossBandit', champion: true },
+];
+
+// Вспомогательные функции
+export const getCardById = (id: string): CardData | undefined => ALL_CARDS_DATA.find(c => c.id === id);
+export const getCardsByRarity = (rarity: Rarity): CardData[] => ALL_CARDS_DATA.filter(c => c.rarity === rarity);
+export const getEvoCards = (): CardData[] => ALL_CARDS_DATA.filter(c => c.evoFile !== undefined);
+export const getHeroCards = (): CardData[] => ALL_CARDS_DATA.filter(c => c.heroFile !== undefined);
+export const getChampions = (): CardData[] => ALL_CARDS_DATA.filter(c => c.champion === true);
+export const ALL_CARDS = ALL_CARDS_DATA.map(c => c.id);

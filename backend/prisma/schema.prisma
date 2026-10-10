@@ -1,0 +1,68 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model Player {
+  id         String      @id @default(cuid())
+  name       String      @unique
+  levels     String      // JSON { "Hog Rider": 13, ... }
+  evolutions String      // JSON [ "Knight", ... ]
+  heroes     String      // JSON [ "Archer Queen", ... ]
+  savedDecks SavedDeck[]
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+   gameProgress  GameProgress?
+}
+model GameProgress {
+  id            String   @id @default(cuid())
+  playerName    String   @unique
+  player        Player   @relation(fields: [playerName], references: [name])
+  playerScore   Int      @default(0)
+  computerScore Int      @default(0)
+  record        Int      @default(0)
+  updatedAt     DateTime @updatedAt
+}
+model SavedDeck {
+  id        String   @id @default(cuid())
+  playerId  String
+  player    Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  name      String
+  cards     String   // JSON массив из 8 строк (порядок важен, как в колоде)
+  createdAt DateTime @default(now())
+}
+
+model MetaDeck {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  cards       String   // JSON массив из 8 строк
+  slot2Type   String?  // "evo" или "hero"
+  tier        String?
+  winRate     Float?
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
+  sourceId    String
+  source      Source   @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  sourceUrl   String?
+  externalId  String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
+
+model Category {
+  id        String     @id @default(cuid())
+  name      String     @unique
+  decks     MetaDeck[]
+  createdAt DateTime   @default(now())
+}
+
+model Source {
+  id        String     @id @default(cuid())
+  name      String     @unique
+  decks     MetaDeck[]
+  createdAt DateTime   @default(now())
+}

@@ -1,0 +1,26 @@
+# Секреты и окружение
+.env
+backend/.env
+
+# Зависимости
+node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Базы данных разработки и артефакты Prisma
+backend/prisma/*.db
+backend/prisma/*.db-journal
+
+# Сборка и кэш
+dist/
+frontend/dist/
+build/
+.vite/
+.turbo/
+*.log
+
+# Системные файлы ОС
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
