@@ -18,6 +18,35 @@ export interface Player {
   updatedAt: string;
 }
 
+export interface ClashRoyalePlayerStats {
+  tag: string;
+  name: string;
+  expLevel: number;
+  trophies: number;
+  bestTrophies: number;
+  wins: number;
+  losses: number;
+  battleCount: number;
+  arena?: {
+    id: number;
+    name: string;
+  };
+  clan?: {
+    tag: string;
+    name: string;
+  };
+}
+
+export const getClashRoyalePlayerStats = (playerTag: string) => {
+  const normalizedTag = playerTag.trim().startsWith('#')
+    ? playerTag.trim()
+    : `#${playerTag.trim()}`;
+
+  return api
+    .get<ClashRoyalePlayerStats>(`/player-stats/${encodeURIComponent(normalizedTag)}`)
+    .then(res => res.data);
+};
+
 export interface MetaDeck {
   id: string;
   name: string;
