@@ -15,6 +15,7 @@ import Recommend from './components/Recommend';
 import ClanWarRecommend from './components/ClanWarRecommend';
 import Diagnose from './components/Diagnose';
 import SavedDecks from './components/SavedDecks';
+import PlayerStats from './components/PlayerStats';
 
 // ---------- Игровая логика ----------
 const CYCLES = [
@@ -561,6 +562,7 @@ function AppContent() {
         <div className="max-w-6xl mx-auto flex flex-wrap items-center gap-2 justify-center">
           <NavLink to="/" className={navLinkClass}>Главная</NavLink>
           <NavLink to="/players" className={navLinkClass}>Аккаунты</NavLink>
+          <NavLink to="/player-stats" className={navLinkClass}>Статистика игрока</NavLink>
           <NavLink to="/decks" className={navLinkClass}>Мета-колоды</NavLink>
           <NavLink to="/recommend" className={navLinkClass}>Подбор</NavLink>
           <NavLink to="/clanwar" className={navLinkClass}>Clan Wars</NavLink>
@@ -584,6 +586,7 @@ function AppContent() {
         <Routes>
           <Route path="/" element={<Home theme={theme} />} />
           <Route path="/players" element={<PlayerList />} />
+          <Route path="/player-stats" element={<PlayerStats />} />
           <Route path="/players/new" element={<PlayerForm />} />
           <Route path="/players/edit/:name" element={<PlayerForm />} />
           <Route path="/decks" element={<DeckList />} />
