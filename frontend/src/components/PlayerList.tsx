@@ -10,10 +10,12 @@ import {
   UserGroupIcon,
   PencilIcon,
   TrashIcon,
+  BookmarkIcon,
+  WrenchScrewdriverIcon,
 } from '@heroicons/react/24/outline';
 import { getPlayers, deletePlayer, Player } from '../api';
-import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
+import { isHeroUpgradeId } from '../utils/clashRoyaleAccountSync';
 
 const PlayerList: React.FC = () => {
   const { theme } = useTheme();
@@ -60,12 +62,7 @@ const PlayerList: React.FC = () => {
     const cardCount = Object.keys(levels).length;
     const totalLevel = Object.values(levels).reduce((sum: number, lv: any) => sum + Number(lv), 0);
     const avgLevel = cardCount > 0 ? totalLevel / cardCount : 0;
-    // Считаем только героев (heroFile && !champion)
-    const heroCount = heroes.filter((h: string) => {
-      const card = ALL_CARDS_DATA.find(c => c.id === h);
-      return card?.heroFile && !card.champion;
-    }).length;
-    // Убираем подсчёт чемпионов
+    const heroCount = heroes.filter(isHeroUpgradeId).length;
     return { cardCount, avgLevel, evolutions: evolutions.length, heroCount };
   };
 
@@ -250,6 +247,53 @@ const PlayerList: React.FC = () => {
                     <UserGroupIcon className="w-3 h-3" />
                     Герои: {stats.heroCount}
                   </span>
+                </div>
+
+                <div className={`mt-3 flex flex-wrap gap-2 border-t pt-3 ${
+                  isDark ? 'border-gray-700' : 'border-gray-200'
+                }`}>
+                  {player.tag?.trim() && (
+                    <Link
+                      to={`/player-stats?tag=${encodeURIComponent(player.tag.trim())}`}
+                      title="Статистика Clash Royale"
+                      className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs ${
+                        isDark ? 'bg-gray-700 text-blue-300 hover:bg-gray-600' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
+                      }`}
+                    >
+                      <ChartBarIcon className="h-4 w-4" />
+                      Статистика
+                    </Link>
+                  )}
+                  <Link
+                    to={`/recommend?player=${encodeURIComponent(player.name)}`}
+                    title="Подбор колод"
+                    className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs ${
+                      isDark ? 'bg-gray-700 text-purple-300 hover:bg-gray-600' : 'bg-purple-50 text-purple-700 hover:bg-purple-100'
+                    }`}
+                  >
+                    <SparklesIcon className="h-4 w-4" />
+                    Подбор
+                  </Link>
+                  <Link
+                    to={`/my-decks?player=${encodeURIComponent(player.name)}`}
+                    title="Мои колоды"
+                    className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs ${
+                      isDark ? 'bg-gray-700 text-amber-300 hover:bg-gray-600' : 'bg-amber-50 text-amber-700 hover:bg-amber-100'
+                    }`}
+                  >
+                    <BookmarkIcon className="h-4 w-4" />
+                    Мои колоды
+                  </Link>
+                  <Link
+                    to={`/clanwar?player=${encodeURIComponent(player.name)}`}
+                    title="Подбор для Clan Wars"
+                    className={`inline-flex items-center gap-1 rounded px-2 py-1 text-xs ${
+                      isDark ? 'bg-gray-700 text-green-300 hover:bg-gray-600' : 'bg-green-50 text-green-700 hover:bg-green-100'
+                    }`}
+                  >
+                    <WrenchScrewdriverIcon className="h-4 w-4" />
+                    Clan Wars
+                  </Link>
                 </div>
               </motion.div>
             );

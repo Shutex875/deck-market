@@ -10,6 +10,7 @@ datasource db {
 model Player {
   id         String      @id @default(cuid())
   name       String      @unique
+  tag        String?
   levels     String      // JSON { "Hog Rider": 13, ... }
   evolutions String      // JSON [ "Knight", ... ]
   heroes     String      // JSON [ "Archer Queen", ... ]

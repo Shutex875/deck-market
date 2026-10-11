@@ -78,7 +78,7 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
   
   router.post('/players', async (req, res) => {
     try {
-      const { name, levels, evolutions, heroes } = req.body;
+      const { name, tag, levels, evolutions, heroes } = req.body;
       if (!name) return res.status(400).json({ error: 'Name is required' });
   
       const existing = await prisma.player.findUnique({ where: { name } });
@@ -89,12 +89,13 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
             levels: levels || existing.levels,
             evolutions: evolutions || existing.evolutions,
             heroes: heroes || existing.heroes,
+            tag: tag === undefined ? existing.tag : tag || null,
           }
         });
         return res.json(updated);
       } else {
         const newPlayer = await prisma.player.create({
-          data: { name, levels: levels || '{}', evolutions: evolutions || '[]', heroes: heroes || '[]' }
+          data: { name, tag: tag || null, levels: levels || '{}', evolutions: evolutions || '[]', heroes: heroes || '[]' }
         });
         return res.json(newPlayer);
       }

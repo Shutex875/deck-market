@@ -11,6 +11,7 @@ const api = axios.create({
 export interface Player {
   id: string;
   name: string;
+  tag: string | null;
   levels: string;
   evolutions: string;
   heroes: string;
@@ -34,6 +35,37 @@ export interface ClashRoyalePlayerStats {
   clan?: {
     tag: string;
     name: string;
+  };
+  cards?: ClashRoyaleCard[];
+  currentDeck?: ClashRoyaleCard[];
+  evolutions?: Array<string | { name?: string; card?: { name?: string } }>;
+  heroes?: Array<string | { name?: string; card?: { name?: string } }>;
+  towerTroops?: ClashRoyaleCard[] | Record<string, unknown>;
+  towerTroop?: ClashRoyaleCard | string;
+}
+
+export interface ClashRoyaleCard {
+  name: string;
+  level?: number;
+  maxLevel?: number;
+  count?: number;
+  evolutionLevel?: number;
+  evoLevel?: number;
+  isEvolved?: boolean;
+  isEvolutionUnlocked?: boolean;
+  heroLevel?: number | string;
+  isHero?: boolean;
+  isHeroUnlocked?: boolean;
+  variant?: string;
+  evolution?: {
+    level?: number;
+    unlocked?: boolean;
+    isUnlocked?: boolean;
+  };
+  hero?: {
+    level?: number | string;
+    unlocked?: boolean;
+    isUnlocked?: boolean;
   };
 }
 

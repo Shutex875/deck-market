@@ -562,12 +562,7 @@ function AppContent() {
         <div className="max-w-6xl mx-auto flex flex-wrap items-center gap-2 justify-center">
           <NavLink to="/" className={navLinkClass}>Главная</NavLink>
           <NavLink to="/players" className={navLinkClass}>Аккаунты</NavLink>
-          <NavLink to="/player-stats" className={navLinkClass}>Статистика игрока</NavLink>
           <NavLink to="/decks" className={navLinkClass}>Мета-колоды</NavLink>
-          <NavLink to="/recommend" className={navLinkClass}>Подбор</NavLink>
-          <NavLink to="/clanwar" className={navLinkClass}>Clan Wars</NavLink>
-          <NavLink to="/my-decks" className={navLinkClass}>Мои колоды</NavLink>
-          <NavLink to="/diagnose" className={navLinkClass}>Диагноз</NavLink>
           <button
             onClick={toggleTheme}
             className={`ml-auto p-2 rounded-full transition-colors duration-200 ${

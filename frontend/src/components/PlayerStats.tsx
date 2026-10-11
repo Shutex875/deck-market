@@ -1,4 +1,5 @@
-import React, { FormEvent, useState } from 'react';
+import React, { FormEvent, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { ArrowPathIcon, MagnifyingGlassIcon, TrophyIcon, UserIcon } from '@heroicons/react/24/outline';
 import { AxiosError } from 'axios';
 import { ClashRoyalePlayerStats, getClashRoyalePlayerStats } from '../api';
@@ -36,14 +37,15 @@ const StatTile: React.FC<{
 const PlayerStats: React.FC = () => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
+  const [searchParams] = useSearchParams();
+  const tagParam = searchParams.get('tag') || '';
   const [tag, setTag] = useState('');
   const [player, setPlayer] = useState<ClashRoyalePlayerStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const searchPlayer = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const normalizedTag = tag.trim();
+  const loadPlayer = async (playerTag: string) => {
+    const normalizedTag = playerTag.trim();
     if (!normalizedTag) {
       setError('Введите Player Tag, например #P890...');
       setPlayer(null);
@@ -61,6 +63,17 @@ const PlayerStats: React.FC = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  useEffect(() => {
+    if (!tagParam) return;
+    setTag(tagParam);
+    void loadPlayer(tagParam);
+  }, [tagParam]);
+
+  const searchPlayer = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    await loadPlayer(tag);
   };
 
   const winRate = player && player.battleCount > 0

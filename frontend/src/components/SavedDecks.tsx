@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   UserIcon,
@@ -18,6 +18,8 @@ const SavedDecks: React.FC = () => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const requestedPlayer = searchParams.get('player');
 
   const [players, setPlayers] = useState<Player[]>([]);
   const [selectedPlayer, setSelectedPlayer] = useState('');
@@ -33,9 +35,8 @@ const SavedDecks: React.FC = () => {
         const data = await getPlayers();
         setPlayers(data);
         if (data.length > 0) {
-          const first = data[0].name;
-          setSelectedPlayer(first);
-          await loadPlayerData(first);
+          const initialPlayer = data.find(player => player.name === requestedPlayer) || data[0];
+          setSelectedPlayer(initialPlayer.name);
         }
       } catch (err) {
         console.error(err);
@@ -86,7 +87,8 @@ const SavedDecks: React.FC = () => {
   };
 
   const handleDiagnose = (deckId: string) => {
-    navigate(`/diagnose?deckId=${deckId}&player=${encodeURIComponent(selectedPlayer)}`);
+    const params = new URLSearchParams({ deckId, player: selectedPlayer });
+    navigate(`/diagnose?${params.toString()}`);
   };
 
   // Функции для отображения специальных слотов с учётом данных игрока

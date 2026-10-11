@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { isAxiosError } from 'axios';
 import { useNavigate, useParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -8,18 +9,16 @@ import {
   SunIcon,
   MoonIcon,
 } from '@heroicons/react/24/outline';
-import { savePlayer, getPlayer } from '../api';
+import { savePlayer, getPlayer, getClashRoyalePlayerStats } from '../api';
 import { ALL_CARDS_DATA, getEvoCards, getHeroCards, rarityColors, Rarity } from '../data/cards';
 import { cardTranslations } from '../utils/cardTranslations';
 import { CardIcon } from '../utils/cardImages';
+import { isHeroUpgradeId, mapClashRoyalePlayerToAccount } from '../utils/clashRoyaleAccountSync';
 import { useTheme } from '../context/ThemeContext';
 
 const ALL_CARDS = ALL_CARDS_DATA.map(c => c.id);
 const EVO_CARDS_IDS = getEvoCards().map(c => c.id);
-// Только настоящие герои (heroFile && !champion)
-const HERO_CARDS_IDS = getHeroCards().filter(c => !c.champion).map(c => c.id);
-// Убираем чемпионов из специальных карт
-const ALL_SPECIAL_CARDS_IDS = [...HERO_CARDS_IDS];
+const HERO_CARDS_IDS = getHeroCards().filter(card => !card.champion).map(card => card.id);
 
 const MAX_LEVEL = 16;
 
@@ -31,7 +30,6 @@ ALL_CARDS_DATA.forEach(c => {
   if (c.evoFile) evoImageMap[c.id] = c.evoFile;
   if (c.heroFile) heroImageMap[c.id] = c.heroFile;
 });
-
 const getRarityClass = (cardId: string): string => {
   const card = ALL_CARDS_DATA.find(c => c.id === cardId);
   return card ? rarityColors[card.rarity] : '';
@@ -66,6 +64,11 @@ const PlayerForm: React.FC = () => {
   const [heroes, setHeroes] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [playerTag, setPlayerTag] = useState('');
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [levelInputRevision, setLevelInputRevision] = useState(0);
 
   const [quickMode, setQuickMode] = useState(false);
   const [quickCards, setQuickCards] = useState<string[]>([]);
@@ -80,6 +83,7 @@ const PlayerForm: React.FC = () => {
         try {
           const data = await getPlayer(decodeURIComponent(name));
           setPlayerName(data.name);
+          setPlayerTag(data.tag || '');
           const parsedLevels = JSON.parse(data.levels);
           const stringLevels: Record<string, string> = {};
           Object.keys(parsedLevels).forEach(key => {
@@ -133,6 +137,62 @@ const PlayerForm: React.FC = () => {
     setHeroes(prev => prev.includes(card) ? prev.filter(c => c !== card) : [...prev, card]);
   };
 
+  const handleSyncByTag = async () => {
+    if (!playerTag.trim()) {
+      setSyncError('Введите Player Tag, например #P890...');
+      setSyncMessage(null);
+      return;
+    }
+
+    setSyncLoading(true);
+    setSyncError(null);
+    setSyncMessage(null);
+    try {
+      const stats = await getClashRoyalePlayerStats(playerTag);
+      const synced = mapClashRoyalePlayerToAccount(stats);
+      if (synced.recognizedCards === 0) {
+        setSyncError('Профиль найден, но API не вернул распознанные данные карт.');
+        return;
+      }
+
+      setLevels(previous => ({ ...previous, ...synced.levels }));
+      setEvolutions(previous => [...new Set([...previous, ...synced.evolutions])]);
+      setHeroes(previous => [
+        ...new Set([...previous.filter(isHeroUpgradeId), ...synced.heroes]),
+      ]);
+      setPlayerTag(stats.tag);
+      setLevelInputRevision(previous => previous + 1);
+      setActiveTab('levels');
+      if (!isEdit && !playerName.trim()) {
+        setPlayerName(stats.name);
+      }
+      setSyncMessage(
+        `Синхронизировано карт: ${synced.recognizedCards}; уровней: ${Object.keys(synced.levels).length}; ` +
+        `эволюций: ${synced.evolutions.length}; героев: ${synced.heroes.length}.` +
+        (synced.usedFullCollection
+          ? ''
+          : ' API предоставил только карты текущей колоды; остальные данные сохранены без изменений.')
+      );
+    } catch (requestError) {
+      if (isAxiosError<{ error?: string }>(requestError)) {
+        const status = requestError.response?.status;
+        if (status === 503) {
+          setSyncError('Синхронизация недоступна: API-токен Clash Royale не настроен на сервере.');
+        } else if (status === 404) {
+          setSyncError('Игрок с таким тегом не найден. Проверьте Player Tag и попробуйте снова.');
+        } else if (status === 400) {
+          setSyncError(requestError.response?.data.error || 'Проверьте формат Player Tag.');
+        } else {
+          setSyncError(requestError.response?.data.error || 'Не удалось загрузить данные. Попробуйте позже.');
+        }
+      } else {
+        setSyncError('Не удалось связаться с сервером. Проверьте подключение и попробуйте снова.');
+      }
+    } finally {
+      setSyncLoading(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!playerName.trim()) {
@@ -151,6 +211,7 @@ const PlayerForm: React.FC = () => {
       });
       await savePlayer({
         name: playerName.trim(),
+        tag: playerTag.trim() || null,
         levels: JSON.stringify(numericLevels),
         evolutions: JSON.stringify(evolutions),
         heroes: JSON.stringify(heroes),
@@ -285,7 +346,7 @@ const PlayerForm: React.FC = () => {
         <div className="flex flex-wrap gap-0.5">
           {cards.map((cardId) => {
             const globalIndex = ALL_CARDS.indexOf(cardId);
-            return <LevelCard key={cardId} cardId={cardId} index={globalIndex} />;
+            return <LevelCard key={`${cardId}-${levelInputRevision}`} cardId={cardId} index={globalIndex} />;
           })}
         </div>
       </motion.div>
@@ -435,6 +496,45 @@ const PlayerForm: React.FC = () => {
           />
         </div>
 
+        <div className={`mb-5 rounded-lg border p-4 ${
+          isDark ? 'border-gray-700 bg-gray-700/40' : 'border-gray-200 bg-gray-50'
+        }`}>
+          <label htmlFor="player-tag" className={`mb-2 block font-medium ${
+            isDark ? 'text-gray-300' : 'text-gray-700'
+          }`}>
+            Player Tag Clash Royale
+          </label>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              id="player-tag"
+              type="text"
+              value={playerTag}
+              onChange={event => setPlayerTag(event.target.value)}
+              placeholder="#P890..."
+              autoComplete="off"
+              className={`min-w-0 flex-1 rounded border px-3 py-2 focus:outline-none ${
+                isDark
+                  ? 'border-gray-600 bg-gray-700 text-gray-200 placeholder-gray-400 focus:border-blue-400'
+                  : 'border-gray-300 bg-white text-gray-900 placeholder-gray-500 focus:border-blue-500'
+              }`}
+            />
+            <button
+              type="button"
+              onClick={handleSyncByTag}
+              disabled={syncLoading}
+              className="rounded bg-indigo-600 px-4 py-2 font-medium text-white transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {syncLoading ? 'Синхронизация...' : 'Синхронизировать по тегу'}
+            </button>
+          </div>
+          {syncError && <p role="alert" className="mt-2 text-sm text-red-500">{syncError}</p>}
+          {syncMessage && (
+            <p role="status" className={`mt-2 text-sm ${isDark ? 'text-green-300' : 'text-green-700'}`}>
+              {syncMessage}
+            </p>
+          )}
+        </div>
+
         {renderTabs()}
 
         <TabContent>
@@ -493,9 +593,9 @@ const PlayerForm: React.FC = () => {
               }`}>
                 <div className={`text-xs font-semibold px-1 mb-1 ${
                   isDark ? 'text-gray-300' : 'text-gray-600'
-                }`}>Герои (Hero)</div>
+                }`}>Герои</div>
                 <div className="flex flex-wrap gap-0.5">
-                  {ALL_SPECIAL_CARDS_IDS.map(cardId => (
+                  {HERO_CARDS_IDS.map(cardId => (
                     <SelectableCardTile
                       key={cardId}
                       cardId={cardId}
@@ -516,7 +616,7 @@ const PlayerForm: React.FC = () => {
         <div className="flex gap-3 mt-4">
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || syncLoading}
             className={`px-6 py-2 rounded transition-all duration-200 ${
               loading
                 ? 'opacity-50 cursor-not-allowed'
