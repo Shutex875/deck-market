@@ -83,6 +83,8 @@ export interface MetaDeck {
   id: string;
   name: string;
   cards: string;
+  description?: string | null;
+  avgElixir: number | null;
   tier: string | null;
   winRate: number | null;
   source: string;
@@ -180,10 +182,14 @@ export const savePlayer = (data: Omit<Player, 'id' | 'createdAt' | 'updatedAt'>)
 export const deletePlayer = (name: string) => api.delete(`/players/${name}`).then(res => res.data);
 
 // === MetaDeck API ===
-export const getMetaDecks = () => api.get<MetaDeck[]>('/meta-decks').then(res => res.data);
+export type MetaDeckSortBy = 'name' | 'createdAt' | 'avgElixir';
+export type SortOrder = 'asc' | 'desc';
+export const getMetaDecks = (sortBy: MetaDeckSortBy = 'name', order: SortOrder = 'asc') =>
+  api.get<MetaDeck[]>('/meta-decks', { params: { sortBy, order } }).then(res => res.data);
 export const createMetaDeck = (data: {
   name: string;
   cards: string[];
+  description?: string;
   slot2Type?: 'evo' | 'hero';
   tier?: string;
   winRate?: number;
@@ -194,6 +200,56 @@ export const createMetaDeck = (data: {
 export const deleteMetaDeck = (id: string) => api.delete(`/meta-decks/${id}`).then(res => res.data);
 export const importDecksFromDeckshop = (category: string = 'popular') =>
   api.post('/meta-decks/import-deckshop', { category }).then(res => res.data);
+export interface RecognizedDeckCard {
+  id: string;
+  name: string;
+  elixirCost: number | null;
+  isEvolution: boolean;
+  isChampion: boolean;
+  isHero: boolean;
+}
+
+export const recognizeDeckScreenshot = async (file: File): Promise<RecognizedDeckCard[]> => {
+  let uploadFile: Blob = file;
+  if (file.size > 1.5 * 1024 * 1024 && typeof createImageBitmap === 'function') {
+    let bitmap: ImageBitmap | undefined;
+    try {
+      bitmap = await createImageBitmap(file);
+      const maxDimension = 1600;
+      const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(bitmap.width * scale);
+      canvas.height = Math.round(bitmap.height * scale);
+      const context = canvas.getContext('2d');
+      if (context) {
+        context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        const compressed = await new Promise<Blob | null>(resolve =>
+          canvas.toBlob(resolve, 'image/jpeg', 0.88)
+        );
+        if (compressed && compressed.size < file.size) uploadFile = compressed;
+      }
+    } finally {
+      bitmap?.close();
+    }
+  }
+
+  const image = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') resolve(reader.result);
+      else reject(new Error('Не удалось прочитать файл изображения'));
+    };
+    reader.onerror = () => reject(reader.error || new Error('Не удалось прочитать файл изображения'));
+    reader.readAsDataURL(uploadFile);
+  });
+
+  const response = await api.post<{ cards: RecognizedDeckCard[] }>(
+    '/meta-decks/recognize-image',
+    { image },
+    { timeout: 60000 }
+  );
+  return response.data.cards;
+};
 
 export interface MetaDeckFull extends MetaDeck {
   category: { id: string; name: string };
@@ -207,6 +263,7 @@ export const getMetaDeck = (id: string) =>
 export const updateMetaDeck = (id: string, data: {
   name: string;
   cards: string[];
+  description?: string;
   slot2Type?: 'evo' | 'hero';
   tier?: string;
   winRate?: number;

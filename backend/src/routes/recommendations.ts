@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { PrismaClient } from '@prisma/client';
 import { cardDataMap } from '../config/cards';
+import { calculateAverageElixir } from '../config/elixirCosts';
 import { calculatePlayerBonus, fixDeckTemplate } from '../services/deckService';
 
 export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
@@ -43,16 +44,23 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         const currentCards = JSON.parse(deck.cards);
         const { cards: fixedCards, slot2Type: fixedSlot2Type } = fixDeckTemplate(currentCards, deck.slot2Type);
 
-        if (JSON.stringify(fixedCards) !== JSON.stringify(currentCards) || fixedSlot2Type !== deck.slot2Type) {
+        const avgElixir = calculateAverageElixir(fixedCards);
+        if (
+          JSON.stringify(fixedCards) !== JSON.stringify(currentCards) ||
+          fixedSlot2Type !== deck.slot2Type ||
+          deck.avgElixir !== avgElixir
+        ) {
           await prisma.metaDeck.update({
             where: { id: deck.id },
             data: {
               cards: JSON.stringify(fixedCards),
               slot2Type: fixedSlot2Type,
+              avgElixir,
             },
           });
           deck.cards = JSON.stringify(fixedCards);
           deck.slot2Type = fixedSlot2Type;
+          deck.avgElixir = avgElixir;
         }
 
         const cardsArray = JSON.parse(deck.cards);

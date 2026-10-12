@@ -41,9 +41,11 @@ model MetaDeck {
   id          String   @id @default(cuid())
   name        String   @unique
   cards       String   // JSON массив из 8 строк
+  description String?
   slot2Type   String?  // "evo" или "hero"
   tier        String?
   winRate     Float?
+  avgElixir   Float?
   categoryId  String
   category    Category @relation(fields: [categoryId], references: [id], onDelete: Restrict)
   sourceId    String

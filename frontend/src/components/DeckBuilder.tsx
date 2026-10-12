@@ -1,5 +1,5 @@
 import React, { useState, useEffect, memo, useCallback } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   DndContext,
   closestCenter,
@@ -223,14 +223,43 @@ const DeckBuilder: React.FC = () => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
   const navigate = useNavigate();
+  const location = useLocation();
   const { id } = useParams<{ id: string }>();
   const isEdit = !!id;
+  const navigationState = location.state as {
+    prefillCards?: unknown;
+    prefillSlot2Type?: 'evo' | 'hero';
+    prefillName?: string;
+    prefillTier?: string;
+    prefillWinRate?: string;
+    prefillCategoryName?: string;
+    prefillSourceName?: string;
+  } | null;
+  const prefillCards = Array.isArray(navigationState?.prefillCards)
+    ? navigationState.prefillCards
+    : [];
+  const prefillSlot2Card = typeof prefillCards[2] === 'string'
+    ? ALL_CARDS_DATA.find(card => card.id === prefillCards[2])
+    : undefined;
+  const prefillSlot2Type =
+    navigationState?.prefillSlot2Type === 'evo' && prefillSlot2Card?.evoFile
+      ? 'evo'
+      : navigationState?.prefillSlot2Type === 'hero' && prefillSlot2Card?.heroFile
+        ? 'hero'
+        : null;
 
-  const [slots, setSlots] = useState<(string | null)[]>(Array(8).fill(null));
-  const [slot2Type, setSlot2Type] = useState<'evo' | 'hero' | null>(null);
-  const [name, setName] = useState('');
-  const [tier, setTier] = useState('');
-  const [winRate, setWinRate] = useState('');
+  const [slots, setSlots] = useState<(string | null)[]>(() =>
+    Array.from({ length: 8 }, (_, index) => {
+      const cardId = prefillCards[index];
+      return typeof cardId === 'string' && ALL_CARDS_DATA.some(card => card.id === cardId)
+        ? cardId
+        : null;
+    })
+  );
+  const [slot2Type, setSlot2Type] = useState<'evo' | 'hero' | null>(prefillSlot2Type);
+  const [name, setName] = useState(navigationState?.prefillName || '');
+  const [tier, setTier] = useState(navigationState?.prefillTier || '');
+  const [winRate, setWinRate] = useState(navigationState?.prefillWinRate || '');
   const [categoryId, setCategoryId] = useState('');
   const [sourceId, setSourceId] = useState('');
   const [sourceUrl, setSourceUrl] = useState('');
@@ -260,13 +289,32 @@ const DeckBuilder: React.FC = () => {
   // Загрузка категорий и источников
   const loadCategoriesAndSources = async () => {
     try {
-      const [cats, srcs] = await Promise.all([getCategories(), getSources()]);
+      let [cats, srcs] = await Promise.all([getCategories(), getSources()]);
+      let preferredCategory = navigationState?.prefillCategoryName
+        ? cats.find(category => category.name.toLocaleLowerCase() === navigationState.prefillCategoryName?.toLocaleLowerCase())
+        : undefined;
+      let preferredSource = navigationState?.prefillSourceName
+        ? srcs.find(source => source.name.toLocaleLowerCase() === navigationState.prefillSourceName?.toLocaleLowerCase())
+        : undefined;
+
+      if (navigationState?.prefillCategoryName && !preferredCategory) {
+        preferredCategory = await createCategory(navigationState.prefillCategoryName);
+        cats = [...cats, preferredCategory];
+      }
+      if (navigationState?.prefillSourceName && !preferredSource) {
+        preferredSource = await createSource(navigationState.prefillSourceName);
+        srcs = [...srcs, preferredSource];
+      }
+
       setCategories(cats);
       setSources(srcs);
-      if (cats.length > 0 && !categoryId) setCategoryId(cats[0].id);
-      if (srcs.length > 0 && !sourceId) setSourceId(srcs[0].id);
+      if (preferredCategory) setCategoryId(preferredCategory.id);
+      else if (cats.length > 0 && !categoryId) setCategoryId(cats[0].id);
+      if (preferredSource) setSourceId(preferredSource.id);
+      else if (srcs.length > 0 && !sourceId) setSourceId(srcs[0].id);
     } catch (err) {
-      console.error('Ошибка загрузки категорий/источников', err);
+      console.error('Ошибка загрузки категорий/источников для формы колоды', err);
+      setError('Не удалось загрузить или создать категорию и источник для распознанной колоды');
     }
   };
 
