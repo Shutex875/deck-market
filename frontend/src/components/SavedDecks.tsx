@@ -1,3 +1,4 @@
+import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -9,7 +10,7 @@ import {
   TrashIcon,
   CalendarIcon,
 } from '@heroicons/react/24/outline';
-import { getPlayers, getPlayer, Player, getSavedDecks, deleteSavedDeck, SavedDeck } from '../api';
+import { getPlayers, getPlayer, Player, deleteSavedDeck } from '../api';
 import { CardIcon } from '../utils/cardImages';
 import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
@@ -23,11 +24,10 @@ const SavedDecks: React.FC = () => {
 
   const [players, setPlayers] = useState<Player[]>([]);
   const [selectedPlayer, setSelectedPlayer] = useState('');
-  const [decks, setDecks] = useState<SavedDeck[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
-  const [playerEvolutions, setPlayerEvolutions] = useState<string[]>([]);
-  const [playerHeroes, setPlayerHeroes] = useState<string[]>([]);
+  const { decks, loading, error, reload } = useSavedDecks(selectedPlayer);
+  const [profile, setProfile] = useState<{ name: string; evolutions: string[]; heroes: string[] }>();
+  const playerEvolutions = profile?.name === selectedPlayer ? profile.evolutions : [];
+  const playerHeroes = profile?.name === selectedPlayer ? profile.heroes : [];
 
   useEffect(() => {
     const fetchPlayers = async () => {
@@ -46,41 +46,25 @@ const SavedDecks: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (selectedPlayer) {
-      loadPlayerData(selectedPlayer);
-      fetchDecks();
-    }
-  }, [selectedPlayer]);
-
-  const loadPlayerData = async (playerName: string) => {
-    try {
-      const player = await getPlayer(playerName);
-      setPlayerEvolutions(JSON.parse(player.evolutions));
-      setPlayerHeroes(JSON.parse(player.heroes));
-    } catch (err) {
-      console.error('Ошибка загрузки данных игрока', err);
-    }
-  };
-
-  const fetchDecks = async () => {
     if (!selectedPlayer) return;
-    setLoading(true);
-    setError('');
-    try {
-      const data = await getSavedDecks(selectedPlayer);
-      setDecks(data);
-    } catch (err) {
-      setError('Не удалось загрузить сохранённые колоды');
-    } finally {
-      setLoading(false);
-    }
-  };
+    const request = new AbortController();
+    void getPlayer(selectedPlayer, request.signal).then(player => {
+      if (!request.signal.aborted) setProfile({
+        name: selectedPlayer,
+        evolutions: JSON.parse(player.evolutions),
+        heroes: JSON.parse(player.heroes),
+      });
+    }).catch(error => {
+      if (!request.signal.aborted) console.error('Ошибка загрузки данных игрока', error);
+    });
+    return () => request.abort();
+  }, [selectedPlayer]);
 
   const handleDelete = async (id: string) => {
     if (!confirm('Удалить колоду?')) return;
     try {
-      await deleteSavedDeck(id);
-      await fetchDecks();
+      await deleteSavedDeck(id, selectedPlayer);
+      reload();
     } catch (err) {
       alert('Ошибка удаления');
     }

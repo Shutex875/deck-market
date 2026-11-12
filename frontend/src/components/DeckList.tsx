@@ -1,3 +1,4 @@
+import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -18,7 +19,7 @@ import {
   PhotoIcon,
   ArrowUpTrayIcon,
 } from '@heroicons/react/24/outline';
-import { getMetaDecks, deleteMetaDeck, getCategories, Category, getPlayers, getSavedDecks, saveDeck, SavedDeck, Player, checkDeckDuplicates, recognizeDeckScreenshot, RecognizedDeckCard, MetaDeckSortBy, SortOrder, importMockDecks, type MetaDeckFull } from '../api';
+import { getMetaDecks, deleteMetaDeck, getCategories, Category, getPlayers, saveDeck, Player, checkDeckDuplicates, recognizeDeckScreenshot, RecognizedDeckCard, MetaDeckSortBy, SortOrder, importMockDecks, type MetaDeckFull } from '../api';
 import { CardIcon } from '../utils/cardImages';
 import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
@@ -80,7 +81,7 @@ const DeckList: React.FC = () => {
   // Состояния для сохранения в избранное
   const [players, setPlayers] = useState<Player[]>([]);
   const [selectedPlayerName, setSelectedPlayerName] = useState<string>('');
-  const [savedDecks, setSavedDecks] = useState<SavedDeck[]>([]);
+  const { decks: savedDecks, loading: loadingSavedDecks, reload: reloadSavedDecks } = useSavedDecks(selectedPlayerName);
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [savingDeck, setSavingDeck] = useState<CatalogDeck | null>(null);
   const [saveLoading, setSaveLoading] = useState(false);
@@ -113,19 +114,9 @@ const DeckList: React.FC = () => {
       setPlayers(data);
       if (data.length > 0) {
         setSelectedPlayerName(data[0].name);
-        await loadSavedDecks(data[0].name);
       }
     } catch (error) {
       console.error(error);
-    }
-  };
-
-  const loadSavedDecks = async (playerName: string) => {
-    try {
-      const data = await getSavedDecks(playerName);
-      setSavedDecks(data);
-    } catch (error) {
-      console.error('Ошибка загрузки сохранённых колод', error);
     }
   };
 
@@ -310,7 +301,7 @@ const DeckList: React.FC = () => {
 
   // Сохранить колоду
   const handleSaveDeck = async () => {
-    if (!savingDeck || !selectedPlayerName) return;
+    if (!savingDeck || !selectedPlayerName || loadingSavedDecks) return;
     setSaveLoading(true);
     setSaveError('');
     try {
@@ -322,7 +313,7 @@ const DeckList: React.FC = () => {
       }
       await saveDeck(selectedPlayerName, savingDeck.name, savingDeck.cards);
       // Обновляем список сохранённых колод для выбранного игрока
-      await loadSavedDecks(selectedPlayerName);
+      reloadSavedDecks();
       setIsSaveModalOpen(false);
       setSavingDeck(null);
       alert('Колода сохранена!');
@@ -886,7 +877,6 @@ const DeckList: React.FC = () => {
                       value={selectedPlayerName}
                       onChange={(e) => {
                         setSelectedPlayerName(e.target.value);
-                        loadSavedDecks(e.target.value);
                         setSaveError('');
                       }}
                       className={`w-full mt-2 rounded px-3 py-2 transition-colors duration-200 ${
@@ -916,7 +906,7 @@ const DeckList: React.FC = () => {
                     </button>
                     <button
                       onClick={handleSaveDeck}
-                      disabled={saveLoading}
+                      disabled={saveLoading || loadingSavedDecks || !selectedPlayerName}
                       className={`px-4 py-2 rounded transition-all ${
                         saveLoading ? 'opacity-50 cursor-not-allowed' : 'hover:shadow-lg transform hover:scale-105'
                       } ${isDark ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-600 hover:bg-blue-700'} text-white`}

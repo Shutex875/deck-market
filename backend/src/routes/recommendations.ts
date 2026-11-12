@@ -437,7 +437,12 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
   router.delete('/saved-decks/:id', async (req, res) => {
     try {
       const { id } = req.params;
-      await prisma.savedDeck.delete({ where: { id } });
+      const { playerName } = req.query;
+      if (typeof playerName !== 'string' || !playerName.trim()) {
+        return res.status(400).json({ error: 'Player name is required' });
+      }
+      const { count } = await prisma.savedDeck.deleteMany({ where: { id, player: { name: playerName } } });
+      if (count === 0) return res.status(404).json({ error: 'Saved deck not found' });
       res.json({ success: true });
     } catch (error) {
       console.error(error);

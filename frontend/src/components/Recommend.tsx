@@ -1,3 +1,4 @@
+import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -16,9 +17,7 @@ import {
   recommendDecks,
   Player,
   saveDeck,
-  getSavedDecks,
   deleteSavedDeck,
-  SavedDeck,
   type RecommendResponse,
 } from '../api';
 import { CardIcon } from '../utils/cardImages';
@@ -57,7 +56,7 @@ const Recommend: React.FC = () => {
   const recommendRequest = useRef<AbortController | null>(null);
 
   const [error, setError] = useState('');
-  const [savedDecks, setSavedDecks] = useState<SavedDeck[]>([]);
+  const { decks: savedDecks, reload: reloadSavedDecks } = useSavedDecks(selectedPlayer);
 
   const [includeCards, setIncludeCards] = useState<string[]>([]);
   const [excludeCards, setExcludeCards] = useState<string[]>([]);
@@ -85,21 +84,6 @@ const Recommend: React.FC = () => {
     };
     fetchPlayers();
   }, []);
-
-  useEffect(() => {
-    if (selectedPlayer) {
-      loadSavedDecks(selectedPlayer);
-    }
-  }, [selectedPlayer]);
-
-  const loadSavedDecks = async (playerName: string) => {
-    try {
-      const data = await getSavedDecks(playerName);
-      setSavedDecks(data);
-    } catch (err) {
-      console.error('Ошибка загрузки сохранённых колод', err);
-    }
-  };
 
   const hasActiveFilter = includeCards.length > 0 || excludeCards.length > 0;
 
@@ -142,6 +126,7 @@ const Recommend: React.FC = () => {
     recommendRequest.current?.abort();
     recommendRequest.current = null;
     setSelectedPlayer(playerName);
+    setShowSaveModal(false);
     setDecks([]);
     setTotalDecks(null);
     setLoading(false);
@@ -161,7 +146,7 @@ const Recommend: React.FC = () => {
       await saveDeck(selectedPlayer, saveDeckName.trim(), saveDeckData.cards);
       alert('Колода сохранена!');
       setShowSaveModal(false);
-      await loadSavedDecks(selectedPlayer);
+      reloadSavedDecks();
     } catch (err) {
       alert('Ошибка сохранения');
     } finally {
@@ -172,8 +157,8 @@ const Recommend: React.FC = () => {
   const handleDeleteSavedDeck = async (deckId: string) => {
     if (!confirm('Удалить сохранённую колоду?')) return;
     try {
-      await deleteSavedDeck(deckId);
-      await loadSavedDecks(selectedPlayer);
+      await deleteSavedDeck(deckId, selectedPlayer);
+      reloadSavedDecks();
     } catch (err) {
       alert('Ошибка удаления');
     }

@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import { useSavedDecks } from '../hooks/useSavedDecks';
+import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -17,7 +18,7 @@ import {
   CheckIcon,
   InformationCircleIcon,
 } from '@heroicons/react/24/outline';
-import { getPlayers, recommendCW, Player, getSavedDecks, SavedDeck } from '../api';
+import { getPlayers, recommendCW, Player } from '../api';
 import { CardIcon } from '../utils/cardImages';
 import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
@@ -77,7 +78,8 @@ const ClanWarRecommend: React.FC = () => {
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
 
   // Сохранённые колоды для выбора
-  const [savedDecks, setSavedDecks] = useState<SavedDeck[]>([]);
+  const { decks: savedDecks } = useSavedDecks(selectedPlayer);
+  const recommendationRequest = useRef<AbortController | null>(null);
   const [selectedSavedDeckIds, setSelectedSavedDeckIds] = useState<string[]>([]);
   const [isDeckSelectorOpen, setIsDeckSelectorOpen] = useState(false);
   const [conflictError, setConflictError] = useState<string | null>(null);
@@ -100,20 +102,7 @@ const ClanWarRecommend: React.FC = () => {
     fetchPlayers();
   }, []);
 
-  useEffect(() => {
-    if (selectedPlayer) {
-      loadSavedDecks(selectedPlayer);
-    }
-  }, [selectedPlayer]);
-
-  const loadSavedDecks = async (playerName: string) => {
-    try {
-      const data = await getSavedDecks(playerName);
-      setSavedDecks(data);
-    } catch (err) {
-      console.error('Ошибка загрузки сохранённых колод', err);
-    }
-  };
+  useEffect(() => () => recommendationRequest.current?.abort(), []);
 
   // Функция проверки конфликтов между выбранными колодами
   const checkConflicts = (deckIds: string[]): string | null => {
@@ -192,6 +181,9 @@ const ClanWarRecommend: React.FC = () => {
       setError('Выберите аккаунт');
       return;
     }
+    recommendationRequest.current?.abort();
+    const request = new AbortController();
+    recommendationRequest.current = request;
     setLoading(true);
     setError('');
     try {
@@ -200,17 +192,19 @@ const ClanWarRecommend: React.FC = () => {
         displayLimit,
         includeCards.length > 0 ? includeCards : undefined,
         excludeCards.length > 0 ? excludeCards : undefined,
-        selectedSavedDeckIds.length > 0 ? selectedSavedDeckIds : undefined
+        selectedSavedDeckIds.length > 0 ? selectedSavedDeckIds : undefined,
+        request.signal,
       );
+      if (request.signal.aborted) return;
       if (data && data.combinations) {
         setResult(data);
       } else {
         setError('Не удалось получить рекомендации');
       }
     } catch (err) {
-      setError('Ошибка получения рекомендаций для Clan Wars');
+      if (!request.signal.aborted) setError('Ошибка получения рекомендаций для Clan Wars');
     } finally {
-      setLoading(false);
+      if (!request.signal.aborted) setLoading(false);
     }
   };
 
@@ -345,7 +339,14 @@ const ClanWarRecommend: React.FC = () => {
             }`}>Аккаунт</label>
             <select
               value={selectedPlayer}
-              onChange={(e) => setSelectedPlayer(e.target.value)}
+              onChange={(e) => {
+                recommendationRequest.current?.abort();
+                setSelectedPlayer(e.target.value);
+                clearDeckSelection();
+                setResult(null);
+                setError('');
+                setLoading(false);
+              }}
               className={`w-full rounded px-3 py-2 transition-colors duration-200 ${
                 isDark
                   ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'

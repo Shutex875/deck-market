@@ -4,7 +4,7 @@ const { createRecommendationsRouter } = require('../dist/routes/recommendations'
 const { createMetaDecksRouter } = require('../dist/routes/metaDecks');
 const { findClanWarCombinations } = require('../dist/services/clanWarCombinations');
 
-function request(path, body, prisma, createRouter = createRecommendationsRouter) {
+function request(path, body, prisma, createRouter = createRecommendationsRouter, options = {}) {
   const router = createRouter(prisma);
   const route = router.stack.find(layer => layer.route?.path === path).route;
   const response = { statusCode: 200 };
@@ -18,8 +18,31 @@ function request(path, body, prisma, createRouter = createRecommendationsRouter)
       return this;
     },
   };
-  return Promise.resolve(route.stack[0].handle({ body }, res)).then(() => response);
+  return Promise.resolve(route.stack[0].handle({ body, ...options }, res)).then(() => response);
 }
+
+test('saved deck deletion requires a matching account', async () => {
+  const deletes = [];
+  const prisma = {
+    savedDeck: {
+      async deleteMany({ where }) {
+        deletes.push(where);
+        return { count: Number(where.id === 'deck-a' && where.player.name === 'Account A') };
+      },
+    },
+  };
+  const remove = playerName => request('/saved-decks/:id', undefined, prisma, createRecommendationsRouter, {
+    params: { id: 'deck-a' }, query: { playerName },
+  });
+  assert.equal((await remove()).statusCode, 400);
+  assert.equal(deletes.length, 0);
+  assert.equal((await remove('Account B')).statusCode, 404);
+  assert.deepEqual(await remove('Account A'), { statusCode: 200, body: { success: true } });
+  assert.deepEqual(deletes, [
+    { id: 'deck-a', player: { name: 'Account B' } },
+    { id: 'deck-a', player: { name: 'Account A' } },
+  ]);
+});
 
 test('recommendation routes reject malformed input before querying Prisma', async () => {
   const cases = [

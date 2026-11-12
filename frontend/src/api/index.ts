@@ -161,14 +161,14 @@ export interface SavedDeck {
   createdAt: string;
 }
 
-export const getSavedDecks = (playerName: string) =>
-  api.get<SavedDeck[]>(`/saved-decks?playerName=${encodeURIComponent(playerName)}`).then(res => res.data);
+export const getSavedDecks = (playerName: string, signal?: AbortSignal) =>
+  api.get<SavedDeck[]>('/saved-decks', { params: { playerName }, signal }).then(res => res.data);
 
 export const saveDeck = (playerName: string, name: string, cards: string[]) =>
   api.post<SavedDeck>('/saved-decks', { playerName, name, cards }).then(res => res.data);
 
-export const deleteSavedDeck = (id: string) =>
-  api.delete(`/saved-decks/${id}`).then(res => res.data);
+export const deleteSavedDeck = (id: string, playerName: string) =>
+  api.delete(`/saved-decks/${id}`, { params: { playerName } }).then(res => res.data);
 
 export const diagnoseDeck = (playerName: string, deckId: string) =>
   api.post<{
@@ -182,7 +182,8 @@ export const diagnoseDeck = (playerName: string, deckId: string) =>
 // === Player API ===
 const players = createCachedRead(() => api.get<Player[]>('/players').then(res => res.data));
 export const getPlayers = players.read;
-export const getPlayer = (name: string) => api.get<Player>(`/players/${name}`).then(res => res.data);
+export const getPlayer = (name: string, signal?: AbortSignal) =>
+  api.get<Player>(`/players/${encodeURIComponent(name)}`, { signal }).then(res => res.data);
 export const savePlayer = (data: Omit<Player, 'id' | 'createdAt' | 'updatedAt'>) =>
   api.post<Player>('/players', data).then(res => {
     players.invalidate();
@@ -383,7 +384,8 @@ export const recommendCW = (
   limit: number = 10,
   includeCards?: string[],
   excludeCards?: string[],
-  requiredDeckIds?: string[]
+  requiredDeckIds?: string[],
+  signal?: AbortSignal,
 ) =>
   api.post<CWResponse>('/recommend-cw', {
     playerName,
@@ -391,7 +393,7 @@ export const recommendCW = (
     includeCards,
     excludeCards,
     requiredDeckIds,
-  }).then(res => res.data);
+  }, { signal }).then(res => res.data);
 
 export const diagnose = (playerName: string, targetLevel = 13) =>
   api.post<DiagnoseResponse>('/diagnose', { playerName, targetLevel }).then(res => res.data);
