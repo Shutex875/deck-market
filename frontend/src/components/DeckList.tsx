@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -18,11 +18,26 @@ import {
   PhotoIcon,
   ArrowUpTrayIcon,
 } from '@heroicons/react/24/outline';
-import { getMetaDecks, deleteMetaDeck, getCategories, Category, getPlayers, getSavedDecks, saveDeck, SavedDeck, Player, checkDeckDuplicates, recognizeDeckScreenshot, RecognizedDeckCard, MetaDeckSortBy, SortOrder, importMockDecks } from '../api';
+import { getMetaDecks, deleteMetaDeck, getCategories, Category, getPlayers, getSavedDecks, saveDeck, SavedDeck, Player, checkDeckDuplicates, recognizeDeckScreenshot, RecognizedDeckCard, MetaDeckSortBy, SortOrder, importMockDecks, type MetaDeckFull } from '../api';
 import { CardIcon } from '../utils/cardImages';
 import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
 import DeckFilterModal from './DeckFilterModal';
+
+type CatalogDeck = Omit<MetaDeckFull, 'cards'> & { cards: string[]; composition: string };
+
+const cardsById = new Map(ALL_CARDS_DATA.map(card => [card.id, card]));
+
+function parseDeckCards(value: string): string[] {
+  try {
+    const cards: unknown = JSON.parse(value);
+    return Array.isArray(cards) && cards.every(card => typeof card === 'string') ? cards : [];
+  } catch {
+    return [];
+  }
+}
+
+const deckComposition = (cards: string[]) => JSON.stringify([...cards].sort());
 
 const DeckList: React.FC = () => {
   const { theme } = useTheme();
@@ -30,7 +45,7 @@ const DeckList: React.FC = () => {
   const navigate = useNavigate();
   const screenshotInputRef = useRef<HTMLInputElement>(null);
 
-  const [decks, setDecks] = useState<any[]>([]);
+  const [decks, setDecks] = useState<MetaDeckFull[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [filter, setFilter] = useState('all');
   const [sortBy, setSortBy] = useState<MetaDeckSortBy>('name');
@@ -67,7 +82,7 @@ const DeckList: React.FC = () => {
   const [selectedPlayerName, setSelectedPlayerName] = useState<string>('');
   const [savedDecks, setSavedDecks] = useState<SavedDeck[]>([]);
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
-  const [savingDeck, setSavingDeck] = useState<any | null>(null);
+  const [savingDeck, setSavingDeck] = useState<CatalogDeck | null>(null);
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveError, setSaveError] = useState('');
 
@@ -277,21 +292,17 @@ const DeckList: React.FC = () => {
 
   const hasActiveCardFilter = includeCards.length > 0 || excludeCards.length > 0;
 
-  // Проверка, сохранена ли колода для выбранного игрока
-  const isDeckSaved = (cards: string[]): boolean => {
-    const sortedCards = [...cards].sort();
-    for (const saved of savedDecks) {
-      const savedCards = JSON.parse(saved.cards) as string[];
-      const sortedSaved = [...savedCards].sort();
-      if (sortedCards.length === sortedSaved.length && sortedCards.every((c, i) => c === sortedSaved[i])) {
-        return true;
-      }
-    }
-    return false;
-  };
+  const catalog = useMemo(() => decks.map(deck => {
+    const cards = parseDeckCards(deck.cards);
+    return { ...deck, cards, composition: deckComposition(cards) };
+  }), [decks]);
+  const savedCompositions = useMemo(
+    () => new Set(savedDecks.map(deck => deckComposition(parseDeckCards(deck.cards)))),
+    [savedDecks],
+  );
 
   // Открыть модалку сохранения для выбранной колоды
-  const openSaveModal = (deck: any) => {
+  const openSaveModal = (deck: CatalogDeck) => {
     setSavingDeck(deck);
     setSaveError('');
     setIsSaveModalOpen(true);
@@ -303,15 +314,13 @@ const DeckList: React.FC = () => {
     setSaveLoading(true);
     setSaveError('');
     try {
-      const cards = JSON.parse(savingDeck.cards);
       // Проверяем, не сохранена ли уже
-      const isAlreadySaved = isDeckSaved(cards);
-      if (isAlreadySaved) {
+      if (savedCompositions.has(savingDeck.composition)) {
         setSaveError('Эта колода уже сохранена для выбранного аккаунта');
         setSaveLoading(false);
         return;
       }
-      await saveDeck(selectedPlayerName, savingDeck.name, cards);
+      await saveDeck(selectedPlayerName, savingDeck.name, savingDeck.cards);
       // Обновляем список сохранённых колод для выбранного игрока
       await loadSavedDecks(selectedPlayerName);
       setIsSaveModalOpen(false);
@@ -325,20 +334,14 @@ const DeckList: React.FC = () => {
   };
 
   // Фильтрация
-  const filteredDecks = decks.filter(deck => {
-    if (filter !== 'all' && deck.categoryId !== filter) return false;
-    if (includeCards.length > 0 || excludeCards.length > 0) {
-      const deckCards = JSON.parse(deck.cards) as string[];
-      const hasAllInclude = includeCards.every(cardId => deckCards.includes(cardId));
-      if (!hasAllInclude) return false;
-      const hasAnyExclude = excludeCards.some(cardId => deckCards.includes(cardId));
-      if (hasAnyExclude) return false;
-    }
-    return true;
-  });
+  const filteredDecks = useMemo(() => catalog.filter(deck =>
+    (filter === 'all' || deck.categoryId === filter) &&
+    includeCards.every(cardId => deck.cards.includes(cardId)) &&
+    !excludeCards.some(cardId => deck.cards.includes(cardId))
+  ), [catalog, filter, includeCards, excludeCards]);
 
   const getCustomSrc = (cardId: string, slotIndex: number, slot2Type?: 'evo' | 'hero' | null) => {
-    const card = ALL_CARDS_DATA.find(c => c.id === cardId);
+    const card = cardsById.get(cardId);
     if (!card) return undefined;
     if (slotIndex === 0 && card.evoFile) return `/cards/Evo/${card.evoFile}.webp`;
     if (slotIndex === 1 && card.heroFile) return `/cards/Hero/${card.heroFile}.webp`;
@@ -357,7 +360,7 @@ const DeckList: React.FC = () => {
     if (slotIndex === 2) {
       if (slot2Type === 'evo') return 'border-purple-500 border-4';
       if (slot2Type === 'hero') return 'border-yellow-500 border-4';
-      const card = cardId ? ALL_CARDS_DATA.find(c => c.id === cardId) : null;
+      const card = cardId ? cardsById.get(cardId) : undefined;
       if (card?.evoFile) return 'border-purple-500 border-4';
       if (card?.heroFile || card?.champion) return 'border-yellow-500 border-4';
       return 'border-gray-300 border-2 animate-borderGlow';
@@ -521,10 +524,10 @@ const DeckList: React.FC = () => {
             }}
             className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
           >
-            {filteredDecks.map(deck => {
-              const cards = JSON.parse(deck.cards);
+            {filteredDecks.map((deck, deckIndex) => {
+              const { cards } = deck;
               const slot2TypeFromDeck = deck.slot2Type;
-              const saved = isDeckSaved(cards);
+              const saved = cards.length === 8 && savedCompositions.has(deck.composition);
               return (
                 <motion.div
                   key={deck.id}
@@ -545,6 +548,7 @@ const DeckList: React.FC = () => {
                     <div className="flex gap-1 items-center">
                       <button
                         onClick={() => openSaveModal(deck)}
+                        disabled={cards.length !== 8}
                         className={`p-1 rounded transition-colors ${
                           saved
                             ? isDark ? 'text-yellow-400 hover:bg-gray-600' : 'text-yellow-500 hover:bg-yellow-50'
@@ -613,7 +617,12 @@ const DeckList: React.FC = () => {
                       const borderClass = getSlotBorderClass(idx, slot2TypeFromDeck, card);
                       return (
                         <div key={idx} className={`relative rounded bg-gray-50 dark:bg-gray-700 p-1 flex flex-col items-center ${borderClass}`}>
-                          <CardIcon cardId={card} className="w-10 h-10" customSrc={customSrc} />
+                          <CardIcon
+                            cardId={card}
+                            className="w-10 h-10"
+                            customSrc={customSrc}
+                            loading={deckIndex < 3 ? 'eager' : 'lazy'}
+                          />
                         </div>
                       );
                     })}

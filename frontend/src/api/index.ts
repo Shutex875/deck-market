@@ -88,7 +88,9 @@ export interface MetaDeck {
   avgElixir: number | null;
   tier: string | null;
   winRate: number | null;
-  source: string;
+  categoryId: string;
+  sourceId: string;
+  sourceUrl: string | null;
   isActive: boolean;
   createdAt: string;
   slot2Type?: 'evo' | 'hero' | null;
@@ -195,7 +197,7 @@ export const deletePlayer = (name: string) => api.delete(`/players/${name}`).the
 export type MetaDeckSortBy = 'name' | 'createdAt' | 'avgElixir';
 export type SortOrder = 'asc' | 'desc';
 export const getMetaDecks = (sortBy: MetaDeckSortBy = 'name', order: SortOrder = 'asc') =>
-  api.get<MetaDeck[]>('/meta-decks', { params: { sortBy, order } }).then(res => res.data);
+  api.get<MetaDeckFull[]>('/meta-decks', { params: { sortBy, order } }).then(res => res.data);
 export const createMetaDeck = (data: {
   name: string;
   cards: string[];
@@ -274,7 +276,6 @@ export const recognizeDeckScreenshot = async (file: File, signal?: AbortSignal):
 export interface MetaDeckFull extends MetaDeck {
   category: { id: string; name: string };
   source: { id: string; name: string };
-  slot2Type?: 'evo' | 'hero' | null;
 }
 
 export const getMetaDeck = (id: string) =>

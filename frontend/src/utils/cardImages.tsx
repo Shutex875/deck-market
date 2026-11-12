@@ -18,9 +18,10 @@ interface CardIconProps {
   className?: string;
   alt?: string;
   customSrc?: string;
+  loading?: 'eager' | 'lazy';
 }
 
-export const CardIcon: React.FC<CardIconProps> = ({ cardId, className = 'w-8 h-8', alt, customSrc }) => {
+export const CardIcon: React.FC<CardIconProps> = ({ cardId, className = 'w-8 h-8', alt, customSrc, loading }) => {
   const file = cardImageMap[cardId] || cardId;
   const defaultWebp = `/cards/${file}.webp`;
   const defaultPng = `/cards/${file}.png`;
@@ -57,6 +58,7 @@ export const CardIcon: React.FC<CardIconProps> = ({ cardId, className = 'w-8 h-8
     <img
       src={currentSrc}
       alt={name}
+      loading={loading}
       className={`object-contain ${className}`}
       onError={handleError}
       title={name}
