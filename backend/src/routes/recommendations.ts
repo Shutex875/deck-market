@@ -1,11 +1,29 @@
 import { Router } from 'express';
 import type { PrismaClient } from '@prisma/client';
+import { z } from 'zod';
 import { cardDataMap } from '../config/cards';
 import { findClanWarCombinations } from '../services/clanWarCombinations';
 import { calculatePlayerBonus, fixDeckTemplate } from '../services/deckService';
 import { scoreFilteredDeck } from '../services/filteredRecommendations';
 
-const normalizeLimit = (value: unknown, fallback: number): number => {
+const cardFilterError = 'Card filters must be arrays of card IDs';
+const cardFilter = z.array(z.string({ error: cardFilterError }), { error: cardFilterError }).default([]);
+const requiredDeckIdsError = 'Required decks must be an array of deck IDs';
+const recommendationRequest = z.object({
+  playerName: z.string({ error: 'Player name is required' })
+    .refine(name => name.trim().length > 0, 'Player name is required'),
+  limit: z.union([z.number(), z.string()], { error: 'Limit must be a number or string' }).optional(),
+  includeCards: cardFilter,
+  excludeCards: cardFilter,
+}, { error: 'Request body must be an object' });
+const clanWarRequest = recommendationRequest.extend({
+  requiredDeckIds: z.array(
+    z.string({ error: requiredDeckIdsError }),
+    { error: requiredDeckIdsError },
+  ).default([]),
+});
+
+const normalizeLimit = (value: number | string | undefined, fallback: number): number => {
   const requestedLimit = Number(value);
   return Number.isFinite(requestedLimit)
     ? Math.min(100, Math.max(1, Math.trunc(requestedLimit)))
@@ -17,14 +35,10 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
 
   router.post('/recommend', async (req, res) => {
     try {
-      const { playerName, limit: requestedLimit, includeCards = [], excludeCards = [] } = req.body ?? {};
+      const parsed = recommendationRequest.safeParse(req.body ?? {});
+      if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+      const { playerName, limit: requestedLimit, includeCards, excludeCards } = parsed.data;
       const limit = normalizeLimit(requestedLimit, 10);
-      if (!playerName) return res.status(400).json({ error: 'Player name is required' });
-      if (![includeCards, excludeCards].every(cards =>
-        Array.isArray(cards) && cards.every(card => typeof card === 'string')
-      )) {
-        return res.status(400).json({ error: 'Card filters must be arrays of card IDs' });
-      }
 
       const player = await prisma.player.findUnique({ where: { name: playerName } });
       if (!player) return res.status(404).json({ error: 'Player not found' });
@@ -42,8 +56,8 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         const ownedHeroes = new Set<string>(heroes);
         const matches = catalog.flatMap(deck => {
           const cards: string[] = JSON.parse(deck.cards);
-          if (!includeCards.every((card: string) => cards.includes(card)) ||
-              excludeCards.some((card: string) => cards.includes(card))) return [];
+          if (!includeCards.every(card => cards.includes(card)) ||
+              excludeCards.some(card => cards.includes(card))) return [];
           return [scoreFilteredDeck(deck, cards, rawLevels, ownedEvolutions, ownedHeroes)];
         });
         matches.sort((a, b) => b.score - a.score);
@@ -127,19 +141,13 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
 
   router.post('/recommend-cw', async (req, res) => {
     try {
-      const {
-        playerName,
-        limit: requestedLimit,
-        includeCards = [],
-        excludeCards = [],
-        requiredDeckIds = []
-      } = req.body;
+      const parsed = clanWarRequest.safeParse(req.body ?? {});
+      if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
+      const { playerName, limit: requestedLimit, includeCards, excludeCards, requiredDeckIds } = parsed.data;
 
       const limit = normalizeLimit(requestedLimit, 5);
 
       console.log('📥 /recommend-cw запрос:', { playerName, limit, includeCards, excludeCards, requiredDeckIds });
-
-      if (!playerName) return res.status(400).json({ error: 'Player name is required' });
 
       const player = await prisma.player.findUnique({ where: { name: playerName } });
       if (!player) return res.status(404).json({ error: 'Player not found' });
