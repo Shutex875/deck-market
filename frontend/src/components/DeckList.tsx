@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as Dialog from '@radix-ui/react-dialog';
+import { isAxiosError } from 'axios';
 import {
   PlusIcon,
   ArrowPathIcon,
@@ -17,7 +18,7 @@ import {
   PhotoIcon,
   ArrowUpTrayIcon,
 } from '@heroicons/react/24/outline';
-import { getMetaDecks, deleteMetaDeck, getCategories, Category, getPlayers, getSavedDecks, saveDeck, SavedDeck, Player, recognizeDeckScreenshot, RecognizedDeckCard, MetaDeckSortBy, SortOrder } from '../api';
+import { getMetaDecks, deleteMetaDeck, getCategories, Category, getPlayers, getSavedDecks, saveDeck, SavedDeck, Player, checkDeckDuplicates, recognizeDeckScreenshot, RecognizedDeckCard, MetaDeckSortBy, SortOrder } from '../api';
 import { CardIcon } from '../utils/cardImages';
 import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
@@ -42,10 +43,19 @@ const DeckList: React.FC = () => {
   const [screenshotFile, setScreenshotFile] = useState<File | null>(null);
   const [screenshotCards, setScreenshotCards] = useState<RecognizedDeckCard[]>([]);
   const [screenshotError, setScreenshotError] = useState('');
-  const [screenshotDuplicates, setScreenshotDuplicates] = useState<string[]>([]);
-  const [screenshotSavedDecks, setScreenshotSavedDecks] = useState<SavedDeck[]>([]);
+  const [duplicateCheck, setDuplicateCheck] = useState<{
+    cards: RecognizedDeckCard[];
+    names: string[] | null;
+  } | null>(null);
+  const [duplicateRetry, setDuplicateRetry] = useState(0);
   const [recognizingScreenshot, setRecognizingScreenshot] = useState(false);
-  const [checkingScreenshotDuplicates, setCheckingScreenshotDuplicates] = useState(false);
+  const recognitionRequest = useRef<AbortController | null>(null);
+  const hasUniqueScreenshotCards = screenshotCards.length === 8 &&
+    new Set(screenshotCards.map(card => card.id)).size === 8;
+  const currentDuplicateCheck = duplicateCheck?.cards === screenshotCards ? duplicateCheck : null;
+  const screenshotDuplicates = currentDuplicateCheck?.names ?? [];
+  const checkingScreenshotDuplicates = hasUniqueScreenshotCards && !currentDuplicateCheck;
+  const canContinueScreenshot = hasUniqueScreenshotCards && currentDuplicateCheck?.names?.length === 0;
 
   // Фильтр по картам
   const [includeCards, setIncludeCards] = useState<string[]>([]);
@@ -127,43 +137,33 @@ const DeckList: React.FC = () => {
       const file = imageItem?.getAsFile();
       if (!file) return;
       event.preventDefault();
+      recognitionRequest.current?.abort();
+      setRecognizingScreenshot(false);
       setScreenshotFile(file);
       setScreenshotUrl(URL.createObjectURL(file));
       setScreenshotCards([]);
-      setScreenshotDuplicates([]);
       setScreenshotError('');
     };
     window.addEventListener('paste', handlePaste);
     return () => window.removeEventListener('paste', handlePaste);
   }, [isScreenshotModalOpen]);
 
-  const parseDeckCards = (cardsJson: string): string[] => {
-    try {
-      const cards: unknown = JSON.parse(cardsJson);
-      return Array.isArray(cards) && cards.every(card => typeof card === 'string') ? cards : [];
-    } catch {
-      return [];
-    }
-  };
+  useEffect(() => () => recognitionRequest.current?.abort(), []);
 
-  const findScreenshotDuplicates = (cards: string[], saved: SavedDeck[]) => {
-    const composition = [...cards].sort().join('|');
-    const matchingNames = new Set<string>();
-
-    decks.forEach(deck => {
-      const existingCards = parseDeckCards(deck.cards);
-      if (existingCards.length === 8 && [...existingCards].sort().join('|') === composition) {
-        matchingNames.add(deck.name);
-      }
-    });
-    saved.forEach(deck => {
-      const existingCards = parseDeckCards(deck.cards);
-      if (existingCards.length === 8 && [...existingCards].sort().join('|') === composition) {
-        matchingNames.add(deck.name);
-      }
-    });
-    return [...matchingNames];
-  };
+  useEffect(() => {
+    if (!hasUniqueScreenshotCards) return;
+    const request = new AbortController();
+    checkDeckDuplicates(screenshotCards.map(card => card.id), request.signal)
+      .then(names => {
+        if (!request.signal.aborted) setDuplicateCheck({ cards: screenshotCards, names });
+      })
+      .catch(error => {
+        if (request.signal.aborted) return;
+        console.error(error);
+        setDuplicateCheck({ cards: screenshotCards, names: null });
+      });
+    return () => request.abort();
+  }, [screenshotCards, hasUniqueScreenshotCards, duplicateRetry]);
 
   const handleScreenshotFile = (file?: File) => {
     if (!file) return;
@@ -175,10 +175,11 @@ const DeckList: React.FC = () => {
       setScreenshotError('Максимальный размер скриншота — 7 МБ.');
       return;
     }
+    recognitionRequest.current?.abort();
+    setRecognizingScreenshot(false);
     setScreenshotFile(file);
     setScreenshotUrl(URL.createObjectURL(file));
     setScreenshotCards([]);
-    setScreenshotDuplicates([]);
     setScreenshotError('');
   };
 
@@ -187,24 +188,17 @@ const DeckList: React.FC = () => {
       setScreenshotError('Сначала загрузите скриншот.');
       return;
     }
+    recognitionRequest.current?.abort();
+    const request = new AbortController();
+    recognitionRequest.current = request;
+    setScreenshotCards([]);
     setRecognizingScreenshot(true);
     setScreenshotError('');
     try {
-      const recognized = await recognizeDeckScreenshot(screenshotFile);
-      setScreenshotCards(recognized);
-      setCheckingScreenshotDuplicates(true);
-      const savedDeckResults = await Promise.allSettled(
-        players.map(player => getSavedDecks(player.name))
-      );
-      const allSavedDecks = savedDeckResults.flatMap(result =>
-        result.status === 'fulfilled' ? result.value : []
-      );
-      setScreenshotSavedDecks(allSavedDecks);
-      setScreenshotDuplicates(findScreenshotDuplicates(recognized.map(card => card.id), allSavedDecks));
-      if (savedDeckResults.some(result => result.status === 'rejected')) {
-        setScreenshotError('Не удалось проверить сохранённые колоды всех аккаунтов; проверка мета-колод выполнена.');
-      }
+      const recognized = await recognizeDeckScreenshot(screenshotFile, request.signal);
+      if (!request.signal.aborted) setScreenshotCards(recognized);
     } catch (error) {
+      if (request.signal.aborted) return;
       const message = isAxiosError<{ error?: string; details?: string }>(error)
         ? [error.response?.data.error, error.response?.data.details].filter(Boolean).join(' — ')
         : error instanceof Error
@@ -212,8 +206,7 @@ const DeckList: React.FC = () => {
           : 'Не удалось распознать скриншот.';
       setScreenshotError(message);
     } finally {
-      setRecognizingScreenshot(false);
-      setCheckingScreenshotDuplicates(false);
+      if (!request.signal.aborted) setRecognizingScreenshot(false);
     }
   };
 
@@ -223,22 +216,22 @@ const DeckList: React.FC = () => {
     updatedCards[index] = {
       id: cardId,
       name: cardData?.name || cardId,
+      elixirCost: null,
       isEvolution: false,
       isChampion: Boolean(cardData?.champion),
       isHero: Boolean(cardData?.heroFile),
     };
     setScreenshotCards(updatedCards);
-    setScreenshotDuplicates(findScreenshotDuplicates(updatedCards.map(card => card.id), screenshotSavedDecks));
   };
 
   const closeScreenshotModal = () => {
+    recognitionRequest.current?.abort();
+    setRecognizingScreenshot(false);
     setIsScreenshotModalOpen(false);
     setScreenshotUrl(null);
     setScreenshotFile(null);
     setScreenshotCards([]);
     setScreenshotError('');
-    setScreenshotDuplicates([]);
-    setScreenshotSavedDecks([]);
   };
 
   const handleDelete = async (id: string) => {
@@ -729,6 +722,15 @@ const DeckList: React.FC = () => {
                   {checkingScreenshotDuplicates && (
                     <p className="mb-3 text-sm">Проверяю мета-колоды и сохранённые колоды аккаунтов…</p>
                   )}
+                  {currentDuplicateCheck?.names === null && (
+                    <div role="alert" className="mb-4 text-sm">
+                      Не удалось проверить дубликаты.{' '}
+                      <button type="button" className="underline" onClick={() => {
+                        setDuplicateCheck(null);
+                        setDuplicateRetry(attempt => attempt + 1);
+                      }}>Повторить проверку</button>
+                    </div>
+                  )}
                   {screenshotDuplicates.length > 0 && (
                     <div role="status" className="mb-4 rounded border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
                       {screenshotDuplicates.map(name => (
@@ -813,9 +815,9 @@ const DeckList: React.FC = () => {
                             });
                             closeScreenshotModal();
                           }}
-                          disabled={new Set(screenshotCards.map(card => card.id)).size !== 8 || screenshotDuplicates.length > 0}
+                          disabled={!canContinueScreenshot}
                           className={`rounded px-4 py-2 text-white ${
-                            new Set(screenshotCards.map(card => card.id)).size !== 8 || screenshotDuplicates.length > 0
+                            !canContinueScreenshot
                               ? 'cursor-not-allowed bg-green-400 opacity-60'
                               : 'bg-green-600 hover:bg-green-700'
                           }`}

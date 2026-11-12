@@ -1,16 +1,30 @@
 import { Router } from 'express';
 import type { PrismaClient } from '@prisma/client';
 import { cardDataMap } from '../config/cards';
-import { calculateAverageElixir } from '../config/elixirCosts';
+import { findClanWarCombinations } from '../services/clanWarCombinations';
 import { calculatePlayerBonus, fixDeckTemplate } from '../services/deckService';
+import { scoreFilteredDeck } from '../services/filteredRecommendations';
+
+const normalizeLimit = (value: unknown, fallback: number): number => {
+  const requestedLimit = Number(value);
+  return Number.isFinite(requestedLimit)
+    ? Math.min(100, Math.max(1, Math.trunc(requestedLimit)))
+    : fallback;
+};
 
 export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
   const router = Router();
 
   router.post('/recommend', async (req, res) => {
     try {
-      const { playerName } = req.body;
+      const { playerName, limit: requestedLimit, includeCards = [], excludeCards = [] } = req.body ?? {};
+      const limit = normalizeLimit(requestedLimit, 10);
       if (!playerName) return res.status(400).json({ error: 'Player name is required' });
+      if (![includeCards, excludeCards].every(cards =>
+        Array.isArray(cards) && cards.every(card => typeof card === 'string')
+      )) {
+        return res.status(400).json({ error: 'Card filters must be arrays of card IDs' });
+      }
 
       const player = await prisma.player.findUnique({ where: { name: playerName } });
       if (!player) return res.status(404).json({ error: 'Player not found' });
@@ -18,6 +32,23 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
       const rawLevels = JSON.parse(player.levels);
       const evolutions = JSON.parse(player.evolutions);
       const heroes = JSON.parse(player.heroes);
+
+      if (includeCards.length || excludeCards.length) {
+        const catalog = await prisma.metaDeck.findMany({
+          orderBy: { name: 'asc' },
+          include: { source: true },
+        });
+        const ownedEvolutions = new Set<string>(evolutions);
+        const ownedHeroes = new Set<string>(heroes);
+        const matches = catalog.flatMap(deck => {
+          const cards: string[] = JSON.parse(deck.cards);
+          if (!includeCards.every((card: string) => cards.includes(card)) ||
+              excludeCards.some((card: string) => cards.includes(card))) return [];
+          return [scoreFilteredDeck(deck, cards, rawLevels, ownedEvolutions, ownedHeroes)];
+        });
+        matches.sort((a, b) => b.score - a.score);
+        return res.json({ success: true, decks: matches.slice(0, limit), playerName, totalDecks: matches.length });
+      }
 
       // Нормализация уровней
       const levels: Record<string, number> = {};
@@ -44,29 +75,12 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         const currentCards = JSON.parse(deck.cards);
         const { cards: fixedCards, slot2Type: fixedSlot2Type } = fixDeckTemplate(currentCards, deck.slot2Type);
 
-        const avgElixir = calculateAverageElixir(fixedCards);
-        if (
-          JSON.stringify(fixedCards) !== JSON.stringify(currentCards) ||
-          fixedSlot2Type !== deck.slot2Type ||
-          deck.avgElixir !== avgElixir
-        ) {
-          await prisma.metaDeck.update({
-            where: { id: deck.id },
-            data: {
-              cards: JSON.stringify(fixedCards),
-              slot2Type: fixedSlot2Type,
-              avgElixir,
-            },
-          });
-          deck.cards = JSON.stringify(fixedCards);
-          deck.slot2Type = fixedSlot2Type;
-          deck.avgElixir = avgElixir;
-        }
-
-        const cardsArray = JSON.parse(deck.cards);
+        // Keep normalization in memory. A recommendation read must not issue
+        // one database UPDATE per deck on every request.
+        const cardsArray = fixedCards;
         const { bonus, replacements, slotStatus, changedCards } = calculatePlayerBonus(
           cardsArray,
-          deck.slot2Type,
+          fixedSlot2Type,
           levels,
           evolutions,
           filteredHeroes
@@ -94,20 +108,20 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
           score,
           bonus,
           replacements,
-          slot2Type: deck.slot2Type,
+          slot2Type: fixedSlot2Type,
           slotStatus,
         });
       }
 
       const filtered = scoredDecks.filter(d => d.missingCardsCount <= 2);
       const sorted = filtered.sort((a, b) => b.score - a.score);
-      const top = sorted.slice(0, 10);
+      const top = sorted.slice(0, limit);
 
-      res.json({ success: true, decks: top, playerName });
+      res.json({ success: true, decks: top, playerName, totalDecks: filtered.length });
     } catch (error: any) {
       console.error('❌ Ошибка в /api/recommend:', error);
       console.error('Stack:', error.stack);
-      res.status(500).json({ error: error.message || 'Internal server error' });
+      res.status(500).json({ error: 'Internal server error' });
     }
   });
 
@@ -115,11 +129,13 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
     try {
       const {
         playerName,
-        limit = 5,
+        limit: requestedLimit,
         includeCards = [],
         excludeCards = [],
         requiredDeckIds = []
       } = req.body;
+
+      const limit = normalizeLimit(requestedLimit, 5);
 
       console.log('📥 /recommend-cw запрос:', { playerName, limit, includeCards, excludeCards, requiredDeckIds });
 
@@ -280,7 +296,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
       }
 
       // 6. Проверяем обязательные колоды
-      const requiredSet = new Set(requiredDeckIds || []);
+      const requiredSet = new Set<string>(requiredDeckIds || []);
       if (requiredSet.size > 0) {
         const foundRequired = validDecks.filter(d => requiredSet.has(d.deckId));
         if (foundRequired.length !== requiredSet.size) {
@@ -294,54 +310,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         }
       }
 
-      // 7. Генерация комбинаций
-      const hasOverlap = (deckList: typeof validDecks): boolean => {
-        const usedCards = new Set<string>();
-        for (const deck of deckList) {
-          for (const card of deck.cards) {
-            if (usedCards.has(card)) return true;
-            usedCards.add(card);
-          }
-        }
-        return false;
-      };
-
-      const getCombinations = (arr: any[], k: number): any[][] => {
-        if (k === 0) return [[]];
-        if (arr.length === 0) return [];
-        const result: any[][] = [];
-        const [first, ...rest] = arr;
-        const withFirst = getCombinations(rest, k - 1).map(comb => [first, ...comb]);
-        const withoutFirst = getCombinations(rest, k);
-        return [...withFirst, ...withoutFirst];
-      };
-
-      let bestCombinations: { decks: typeof validDecks; totalScore: number; avgScore: number }[] = [];
-      let foundSize = 0;
-
-      const maxSize = 4;
-      const minSize = 2;
-
-      for (let size = maxSize; size >= minSize; size--) {
-        const combos = getCombinations(validDecks, size);
-        let validCombos = combos.filter(combo => !hasOverlap(combo));
-        if (requiredSet.size > 0) {
-          validCombos = validCombos.filter(combo => {
-            const deckIds = combo.map(d => d.deckId);
-            return Array.from(requiredSet).every(id => deckIds.includes(id));
-          });
-        }
-        if (validCombos.length > 0) {
-          const sorted = validCombos.map(combo => {
-            const totalScore = combo.reduce((sum, d) => sum + d.score, 0);
-            const avgScore = totalScore / combo.length;
-            return { decks: combo, totalScore, avgScore };
-          }).sort((a, b) => b.totalScore - a.totalScore);
-          bestCombinations = sorted.slice(0, limit);
-          foundSize = size;
-          break;
-        }
-      }
+      const bestCombinations = findClanWarCombinations(validDecks, requiredSet, limit);
 
       if (bestCombinations.length === 0) {
         return res.json({
@@ -357,14 +326,14 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         success: true,
         combinations: bestCombinations,
         totalCombinations: bestCombinations.length,
-        foundSize,
+        foundSize: bestCombinations[0].decks.length,
         playerName,
         message: undefined,
       });
     } catch (error: any) {
       console.error('❌ Ошибка в /api/recommend-cw:', error);
       console.error('Stack:', error.stack);
-      res.status(500).json({ error: error.message || 'Internal server error' });
+      res.status(500).json({ error: 'Internal server error' });
     }
   });
 

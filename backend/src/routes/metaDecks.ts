@@ -244,6 +244,42 @@ const recognizeWithGemini = async (
 export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
   const router = Router();
 
+  router.post('/meta-decks/check-duplicates', async (req, res) => {
+    const { cards } = req.body ?? {};
+    if (!Array.isArray(cards) || cards.length !== 8 ||
+        !cards.every(card => typeof card === 'string' && card.length > 0) ||
+        new Set(cards).size !== 8) {
+      return res.status(400).json({ error: 'Exactly 8 unique card IDs are required' });
+    }
+
+    try {
+      const select = { cards: true, name: true } as const;
+      const [metaDecks, savedDecks] = await Promise.all([
+        prisma.metaDeck.findMany({ select, orderBy: { name: 'asc' } }),
+        prisma.savedDeck.findMany({ select, orderBy: [{ player: { name: 'asc' } }, { createdAt: 'desc' }] }),
+      ]);
+      const composition = JSON.stringify([...cards].sort());
+      const names = new Set<string>();
+      for (const deck of [...metaDecks, ...savedDecks]) {
+        let storedCards: unknown;
+        try {
+          storedCards = JSON.parse(deck.cards);
+        } catch {
+          continue;
+        }
+        if (Array.isArray(storedCards) && storedCards.length === 8 &&
+            storedCards.every(card => typeof card === 'string') &&
+            JSON.stringify(storedCards.sort()) === composition) {
+          names.add(deck.name);
+        }
+      }
+      res.json({ names: [...names] });
+    } catch (error) {
+      console.error('Failed to check deck duplicates:', error);
+      res.status(500).json({ error: 'Failed to check deck duplicates' });
+    }
+  });
+
   router.post('/meta-decks/recognize-image', async (req, res) => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -759,10 +795,9 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
         : 'name';
       const order = requestedOrder === 'desc' ? 'desc' : 'asc';
       const decks = await prisma.metaDeck.findMany({
-        orderBy: { [sortBy]: order },
+        orderBy: sortBy === 'avgElixir' ? undefined : { [sortBy]: order },
         include: { category: true, source: true }
       });
-      const hasLegacyDecks = decks.some(deck => deck.avgElixir === null);
       const decksWithElixir: typeof decks = [];
       for (const deck of decks) {
         if (deck.avgElixir !== null) {
@@ -771,22 +806,21 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
         }
         try {
           const avgElixir = calculateAverageElixir(JSON.parse(deck.cards));
-          await prisma.metaDeck.update({
-            where: { id: deck.id },
-            data: { avgElixir },
-          });
           decksWithElixir.push({ ...deck, avgElixir });
         } catch (error) {
-          console.error(`Could not backfill average elixir for meta deck ${deck.id}:`, error);
+          console.error(`Could not calculate average elixir for meta deck ${deck.id}:`, error);
           decksWithElixir.push(deck);
         }
       }
-      if (sortBy === 'avgElixir' && hasLegacyDecks) {
-        const backfilledAndSortedDecks = await prisma.metaDeck.findMany({
-          orderBy: { avgElixir: order },
-          include: { category: true, source: true },
+      if (sortBy === 'avgElixir') {
+        const direction = order === 'asc' ? 1 : -1;
+        decksWithElixir.sort((left, right) => {
+          if (left.avgElixir === right.avgElixir) return 0;
+          // Match SQLite's ordering for decks whose elixir could not be calculated.
+          if (left.avgElixir === null) return -direction;
+          if (right.avgElixir === null) return direction;
+          return (left.avgElixir - right.avgElixir) * direction;
         });
-        return res.json(backfilledAndSortedDecks);
       }
       res.json(decksWithElixir);
     } catch (error) {

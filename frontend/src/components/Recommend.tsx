@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -19,38 +19,15 @@ import {
   getSavedDecks,
   deleteSavedDeck,
   SavedDeck,
-  getPlayer,
-  getMetaDecks,
-  MetaDeck,
+  type RecommendResponse,
 } from '../api';
 import { CardIcon } from '../utils/cardImages';
 import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
 import RecommendFilterModal from './RecommendFilterModal';
 
-interface SlotStatus {
-  slot: number;
-  type: 'evo' | 'hero' | 'champion' | 'none';
-  active: boolean;
-}
-
-interface RecommendedDeck {
-  id: string;
-  name: string;
-  cards: string[];
-  cardLevels: Record<string, number>;
-  averageLevel: number;
-  missingCardsCount: number;
-  score: number;
-  bonus: number;
-  tier: string | null;
-  winRate: number | null;
-  category: { name: string };
-  source: { name: string };
-  replacements?: { slot: number; original: string; replacement: string }[];
-  slot2Type?: 'evo' | 'hero' | null;
-  slotStatus?: SlotStatus[];
-}
+type RecommendedDeck = RecommendResponse['decks'][number];
+type SlotStatus = NonNullable<RecommendedDeck['slotStatus']>[number];
 
 // Безопасное преобразование в строку
 const safeString = (value: any): string => {
@@ -65,86 +42,6 @@ const safeString = (value: any): string => {
   return String(value);
 };
 
-// Вспомогательная функция для преобразования MetaDeck в RecommendedDeck
-const convertMetaDeck = (
-  md: MetaDeck,
-  playerLevels: Record<string, number>,
-  evolutions: string[],
-  heroes: string[]
-): RecommendedDeck => {
-  const cards = JSON.parse(md.cards) as string[];
-  const missing = cards.filter((cid) => !playerLevels[cid] || playerLevels[cid] === 0).length;
-  const avg =
-    cards.reduce((sum, cid) => sum + (playerLevels[cid] || 0), 0) / cards.length;
-
-  let score = 0;
-  if (md.winRate !== null && md.winRate !== undefined) {
-    score = md.winRate;
-  } else {
-    switch (md.tier) {
-      case 'S': score = 100; break;
-      case 'A': score = 80; break;
-      case 'B': score = 60; break;
-      default: score = 40;
-    }
-  }
-
-  const slot2Type = md.slot2Type || null;
-  const slotStatus: SlotStatus[] = [];
-
-  const card0 = cards[0];
-  const isEvo0 = evolutions.includes(card0);
-  slotStatus.push({ slot: 0, type: isEvo0 ? 'evo' : 'none', active: isEvo0 });
-
-  const card1 = cards[1];
-  const card1Data = ALL_CARDS_DATA.find(c => c.id === card1);
-  const isHero1 = heroes.includes(card1);
-  const isChampion1 = card1Data?.champion || false;
-  const type1 = isHero1 ? 'hero' : (isChampion1 ? 'champion' : 'none');
-  slotStatus.push({ slot: 1, type: type1, active: isHero1 || isChampion1 });
-
-  const card2 = cards[2];
-  let type2: 'evo' | 'hero' | 'champion' | 'none' = 'none';
-  let active2 = false;
-  if (slot2Type === 'evo') {
-    if (evolutions.includes(card2)) {
-      type2 = 'evo';
-      active2 = true;
-    }
-  } else if (slot2Type === 'hero') {
-    if (heroes.includes(card2)) {
-      type2 = 'hero';
-      active2 = true;
-    }
-  } else {
-    if (evolutions.includes(card2)) {
-      type2 = 'evo';
-      active2 = true;
-    } else if (heroes.includes(card2)) {
-      type2 = 'hero';
-      active2 = true;
-    }
-  }
-  slotStatus.push({ slot: 2, type: type2, active: active2 });
-
-  return {
-    id: md.id,
-    name: md.name,
-    cards,
-    cardLevels: playerLevels,
-    averageLevel: avg,
-    missingCardsCount: missing,
-    score,
-    bonus: 0,
-    tier: md.tier,
-    winRate: md.winRate,
-    category: { name: safeString(md.source) },
-    source: { name: safeString(md.source) },
-    slot2Type,
-    slotStatus,
-  };
-};
-
 const Recommend: React.FC = () => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
@@ -155,7 +52,10 @@ const Recommend: React.FC = () => {
   const [selectedPlayer, setSelectedPlayer] = useState('');
   const [limit, setLimit] = useState(1); // по умолчанию 1
   const [decks, setDecks] = useState<RecommendedDeck[]>([]);
+  const [totalDecks, setTotalDecks] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
+  const recommendRequest = useRef<AbortController | null>(null);
+
   const [error, setError] = useState('');
   const [savedDecks, setSavedDecks] = useState<SavedDeck[]>([]);
 
@@ -167,6 +67,8 @@ const Recommend: React.FC = () => {
   const [saveDeckName, setSaveDeckName] = useState('');
   const [saveDeckData, setSaveDeckData] = useState<{ cards: string[]; name: string } | null>(null);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => () => recommendRequest.current?.abort(), []);
 
   useEffect(() => {
     const fetchPlayers = async () => {
@@ -201,65 +103,49 @@ const Recommend: React.FC = () => {
 
   const hasActiveFilter = includeCards.length > 0 || excludeCards.length > 0;
 
-  const handleRecommend = async () => {
+  const handleRecommend = async (include = includeCards, exclude = excludeCards, count = limit) => {
     if (!selectedPlayer) {
       setError('Выберите аккаунт');
       return;
     }
+    recommendRequest.current?.abort();
+    const request = new AbortController();
+    recommendRequest.current = request;
     setLoading(true);
     setError('');
+    setDecks([]);
+    setTotalDecks(null);
     try {
-      if (hasActiveFilter) {
-        const [metaDecks, player] = await Promise.all([
-          getMetaDecks(),
-          getPlayer(selectedPlayer),
-        ]);
-        const levels = JSON.parse(player.levels) as Record<string, number>;
-        const evolutions = JSON.parse(player.evolutions) as string[];
-        const heroes = JSON.parse(player.heroes) as string[];
-        const allDecks = metaDecks.map((md) => convertMetaDeck(md, levels, evolutions, heroes));
-        setDecks(allDecks);
-      } else {
-        const result = await recommendDecks(selectedPlayer, 100);
-        setDecks(result.decks);
-      }
+      const result = await recommendDecks(selectedPlayer, count, include, exclude, request.signal);
+      if (request.signal.aborted) return;
+      setDecks(result.decks);
+      setTotalDecks(result.totalDecks);
     } catch (err) {
+      if (request.signal.aborted) return;
       setError('Ошибка получения данных');
       console.error(err);
     } finally {
-      setLoading(false);
+      if (!request.signal.aborted) setLoading(false);
     }
   };
-
-  const filteredDecks = useMemo(() => {
-    if (!decks.length) return [];
-    let filtered = decks;
-    if (includeCards.length > 0) {
-      filtered = filtered.filter((deck) =>
-        includeCards.every((cardId) => deck.cards.includes(cardId))
-      );
-    }
-    if (excludeCards.length > 0) {
-      filtered = filtered.filter(
-        (deck) => !excludeCards.some((cardId) => deck.cards.includes(cardId))
-      );
-    }
-    filtered.sort((a, b) => b.score - a.score);
-    return filtered.slice(0, limit);
-  }, [decks, includeCards, excludeCards, limit]);
 
   const handleApplyFilter = (include: string[], exclude: string[]) => {
     setIncludeCards(include);
     setExcludeCards(exclude);
     setIsFilterModalOpen(false);
-    if (decks.length > 0) handleRecommend();
+    if (recommendRequest.current) void handleRecommend(include, exclude);
   };
 
-  const handleClearFilter = () => {
-    setIncludeCards([]);
-    setExcludeCards([]);
-    setIsFilterModalOpen(false);
-    if (decks.length > 0) handleRecommend();
+  const handleClearFilter = () => handleApplyFilter([], []);
+
+  const handlePlayerChange = (playerName: string) => {
+    recommendRequest.current?.abort();
+    recommendRequest.current = null;
+    setSelectedPlayer(playerName);
+    setDecks([]);
+    setTotalDecks(null);
+    setLoading(false);
+    setError('');
   };
 
   const handleSaveDeck = (deck: RecommendedDeck) => {
@@ -350,7 +236,7 @@ const Recommend: React.FC = () => {
             <label className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>Аккаунт</label>
             <select
               value={selectedPlayer}
-              onChange={(e) => setSelectedPlayer(e.target.value)}
+              onChange={(e) => handlePlayerChange(e.target.value)}
               className={`w-full rounded px-3 py-2 transition-colors duration-200 ${
                 isDark
                   ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
@@ -374,7 +260,9 @@ const Recommend: React.FC = () => {
               onChange={(e) => {
                 const val = parseInt(e.target.value);
                 if (!isNaN(val) && val >= 1 && val <= 15) {
+                  if (val === limit) return;
                   setLimit(val);
+                  if (recommendRequest.current) void handleRecommend(includeCards, excludeCards, val);
                 }
               }}
               className={`w-20 rounded px-3 py-2 transition-colors duration-200 ${
@@ -385,7 +273,7 @@ const Recommend: React.FC = () => {
             />
           </div>
           <button
-            onClick={handleRecommend}
+            onClick={() => void handleRecommend()}
             disabled={loading}
             className={`flex items-center gap-2 px-6 py-2 rounded transition-all duration-200 ${
               loading ? 'opacity-50 cursor-not-allowed' : 'hover:shadow-lg transform hover:scale-105'
@@ -429,7 +317,7 @@ const Recommend: React.FC = () => {
           )}
           {decks.length > 0 && (
             <span className="text-sm ml-auto text-gray-500 dark:text-gray-400">
-              Показано {filteredDecks.length} из {decks.length} колод
+              Показано {decks.length} из {totalDecks} колод
               {hasActiveFilter && ' (отфильтровано)'}
             </span>
           )}
@@ -443,7 +331,7 @@ const Recommend: React.FC = () => {
       )}
 
       <AnimatePresence mode="wait">
-        {filteredDecks.length > 0 ? (
+        {decks.length > 0 ? (
           <motion.div
             key="decks"
             initial="hidden"
@@ -455,7 +343,7 @@ const Recommend: React.FC = () => {
             }}
             className="grid grid-cols-1 md:grid-cols-2 gap-4"
           >
-            {filteredDecks.map((deck, idx) => {
+            {decks.map((deck, idx) => {
               const cardCount = deck.cards.length;
               const isFull = cardCount === 8;
               const savedDeckId = isDeckSaved(deck.cards);
@@ -554,7 +442,7 @@ const Recommend: React.FC = () => {
               );
             })}
           </motion.div>
-        ) : (
+        ) : !loading && !error ? (
           <motion.div
             key="empty"
             initial={{ opacity: 0, y: 10 }}
@@ -562,11 +450,11 @@ const Recommend: React.FC = () => {
             exit={{ opacity: 0, y: -10 }}
             className={`text-center py-8 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}
           >
-            {!loading && !error && decks.length === 0
+            {totalDecks === null
               ? 'Нажмите «Подобрать», чтобы получить рекомендации'
               : 'Нет колод, соответствующих фильтру'}
           </motion.div>
-        )}
+        ) : null}
       </AnimatePresence>
 
       {/* Модальное окно сохранения */}

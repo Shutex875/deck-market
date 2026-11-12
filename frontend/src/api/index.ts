@@ -95,6 +95,7 @@ export interface MetaDeck {
 
 export interface RecommendResponse {
   success: boolean;
+  totalDecks: number;
   decks: {
     id: string;
     name: string;
@@ -108,6 +109,7 @@ export interface RecommendResponse {
     winRate: number | null;
     category?: { name: string };
     source?: { name: string };
+    replacements?: { slot: number; original: string; replacement: string }[];
     slot2Type?: 'evo' | 'hero' | null;
     slotStatus?: { slot: number; type: 'evo' | 'hero' | 'champion' | 'none'; active: boolean }[];
   }[];
@@ -209,7 +211,11 @@ export interface RecognizedDeckCard {
   isHero: boolean;
 }
 
-export const recognizeDeckScreenshot = async (file: File): Promise<RecognizedDeckCard[]> => {
+export const checkDeckDuplicates = (cards: string[], signal?: AbortSignal) =>
+  api.post<{ names: string[] }>('/meta-decks/check-duplicates', { cards }, { signal })
+    .then(res => res.data.names);
+
+export const recognizeDeckScreenshot = async (file: File, signal?: AbortSignal): Promise<RecognizedDeckCard[]> => {
   let uploadFile: Blob = file;
   if (file.size > 1.5 * 1024 * 1024 && typeof createImageBitmap === 'function') {
     let bitmap: ImageBitmap | undefined;
@@ -246,7 +252,7 @@ export const recognizeDeckScreenshot = async (file: File): Promise<RecognizedDec
   const response = await api.post<{ cards: RecognizedDeckCard[] }>(
     '/meta-decks/recognize-image',
     { image },
-    { timeout: 60000 }
+    { timeout: 60000, signal }
   );
   return response.data.cards;
 };
@@ -328,8 +334,15 @@ export const createSource = (name: string) => api.post<Source>('/sources', { nam
 export const deleteSource = (id: string) => api.delete(`/sources/${id}`).then(res => res.data);
 
 // === Рекомендации ===
-export const recommendDecks = (playerName: string, limit: number = 100) =>
-  api.post<RecommendResponse>('/recommend', { playerName, limit }).then(res => res.data);
+export const recommendDecks = (
+  playerName: string,
+  limit: number = 100,
+  includeCards: string[] = [],
+  excludeCards: string[] = [],
+  signal?: AbortSignal,
+) =>
+  api.post<RecommendResponse>('/recommend', { playerName, limit, includeCards, excludeCards }, { signal })
+    .then(res => res.data);
 
 export const recommendCW = (
   playerName: string,
