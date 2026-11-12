@@ -1,10 +1,11 @@
 import axios from 'axios';
-import * as cheerio from 'cheerio';
 import { createHash, randomUUID } from 'crypto';
 import { Router } from 'express';
 import type { PrismaClient } from '@prisma/client';
-import { ALL_CARDS, ALL_CARDS_DATA } from '../config/cards';
+import { ALL_CARDS_DATA } from '../config/cards';
 import { calculateAverageElixir } from '../config/elixirCosts';
+import { parseDeckshopDecks } from '../services/deckshopParser';
+import { parseTopLadderDeck } from '../services/topLadderParser';
 
 const GEMINI_ATTEMPT_TIMEOUT_MS = 15_000;
 const GEMINI_TOTAL_TIMEOUT_MS = 50_000;
@@ -641,51 +642,15 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
         });
       }
 
-      const normalizeCardName = (name: string) => name.toLocaleLowerCase().replace(/[^a-z0-9]/g, '');
-      const cardIdByApiName = new Map<string, string>();
-      for (const card of ALL_CARDS_DATA) {
-        for (const alias of [card.id, card.file]) {
-          cardIdByApiName.set(normalizeCardName(alias), card.id);
-        }
-      }
-      for (const [apiName, cardId] of Object.entries({
-        skeletons: 'Skeleton',
-        'minion horde': 'Horde',
-        'royal delivery': 'RoyalDelivery',
-      })) {
-        cardIdByApiName.set(normalizeCardName(apiName), cardId);
-      }
-
-      let decksWithParsedComposition = 0;
       const importableDecks = successfulProfiles.flatMap(({ player, cards }) => {
-        const rejectDeck = (reason: string) => {
-          console.error(`Top Ladder deck rejected for ${player.tag} (${player.name}): ${reason}`);
+        const parsed = parseTopLadderDeck(cards);
+        if ('error' in parsed) {
+          console.error(`Top Ladder deck rejected for ${player.tag} (${player.name}): ${parsed.error}`);
           return [];
-        };
-        if (!Array.isArray(cards) || cards.length === 0) return rejectDeck('Пустой массив карт');
-        if (cards.length !== 8) return rejectDeck(`Ожидалось 8 карт, получено ${cards.length}`);
-        const cardNames = cards.map(card => typeof card?.name === 'string' ? card.name.trim() : '');
-        if (cardNames.some(cardName => !cardName)) return rejectDeck('В ответе есть карта без названия');
-
-        const cardIds = cardNames.map(cardName => cardIdByApiName.get(normalizeCardName(cardName)));
-        const missingCardNames = cardNames.filter((_, index) => !cardIds[index]);
-        if (missingCardNames.length > 0) {
-          return rejectDeck(`Не найдены карты в каталоге: ${missingCardNames.join(', ')}`);
         }
-        const canonicalCardIds = cardIds.filter((cardId): cardId is string => cardId !== undefined);
-        if (new Set(canonicalCardIds).size !== 8) {
-          return rejectDeck(`Дубликат ID карты после маппинга: ${canonicalCardIds.join(', ')}`);
-        }
-        decksWithParsedComposition++;
-        return [{
-          player,
-          cards: canonicalCardIds,
-          compositionKey: JSON.stringify([...canonicalCardIds].sort()),
-        }];
+        return [{ player, ...parsed }];
       });
-      console.log(
-        `Top Ladder deck parsing summary: profiles=${successfulProfiles.length}, parsedCompositions=${decksWithParsedComposition}, importable=${importableDecks.length}, rejected=${successfulProfiles.length - importableDecks.length}`
-      );
+      console.log(`Top Ladder decks: profiles=${successfulProfiles.length}, importable=${importableDecks.length}`);
 
       const existingDecks = await prisma.metaDeck.findMany({ select: { cards: true } });
       const knownCompositions = new Set<string>();
@@ -695,11 +660,12 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
           if (Array.isArray(cards) && cards.length === 8 && cards.every(card => typeof card === 'string')) {
             knownCompositions.add(JSON.stringify([...cards].sort()));
           }
-          console.log(`Top Ladder duplicate check loaded ${knownCompositions.size} existing 8-card compositions`);
         } catch (error) {
           console.error('Skipping malformed stored meta deck card list during duplicate check:', error);
         }
       }
+
+      console.log(`Top Ladder duplicate check loaded ${knownCompositions.size} existing 8-card compositions`);
 
       const category = await prisma.category.upsert({
         where: { name: 'Top Ladder' },
@@ -936,44 +902,7 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
         });
       }
   
-      const $ = cheerio.load(html);
-      const decks: { name: string; cards: string[]; tier?: string; winRate?: number }[] = [];
-  
-      const possibleSelectors = [
-        '.deck-list-item',
-        '.deck-item',
-        '.deck-card',
-        '.deck',
-        '[data-testid="deck"]',
-        '.col-lg-4 .card',
-        '.deck-preview',
-        '.deck-card-container',
-      ];
-  
-      for (const selector of possibleSelectors) {
-        const elements = $(selector);
-        if (elements.length > 0) {
-          elements.each((i, el) => {
-            const name = $(el).find('.deck-name, .title, h4, h5').first().text().trim() || `Колода ${i+1}`;
-            const cards: string[] = [];
-            $(el).find('.card-name, .card, .deck-card, .card-img-alt, img[alt]').each((j, cardEl) => {
-              let cardName = $(cardEl).text().trim() || $(cardEl).attr('alt') || '';
-              cardName = cardName.replace(/[^a-zA-Z ]/g, '').trim();
-              if (cardName && ALL_CARDS.includes(cardName)) {
-                cards.push(cardName);
-              }
-            });
-            if (cards.length === 8) {
-              const tier = $(el).find('.tier, .deck-tier, .badge').first().text().trim() || null;
-              const winRateText = $(el).find('.win-rate, .winrate, .percentage').first().text().trim();
-              const winRate = winRateText ? parseFloat(winRateText) : null;
-              decks.push({ name, cards, tier: tier || undefined, winRate: winRate || undefined });
-            }
-          });
-          if (decks.length > 0) break;
-        }
-      }
-  
+      const decks = parseDeckshopDecks(html);
       if (decks.length === 0) {
         return res.status(404).json({
           error: 'Не удалось найти колоды на странице. Структура сайта изменилась.',

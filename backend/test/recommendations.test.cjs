@@ -5,6 +5,7 @@ const { createRecommendationsRouter } = require('../dist/routes/recommendations'
 const { createMetaDecksRouter } = require('../dist/routes/metaDecks');
 const { createPlayersRouter } = require('../dist/routes/players');
 const { findClanWarCombinations } = require('../dist/services/clanWarCombinations');
+const { parseTopLadderDeck } = require('../dist/services/topLadderParser');
 
 function request(path, body, prisma, createRouter = createRecommendationsRouter, options = {}) {
   const router = createRouter(prisma);
@@ -243,4 +244,13 @@ test('game progress upsert creates the row through its player name', async () =>
     },
   }, createPlayersRouter);
   assert.deepEqual(result, { statusCode: 200, body: { playerScore: 2, computerScore: 1, record: 4 } });
+});
+
+test('Top Ladder parser resolves aliases while preserving card order and rejects duplicate IDs', () => {
+  const names = ['Skeletons', 'Knight', 'Archers', 'Minion Horde', 'Fireball', 'Cannon', 'Hog Rider', 'Valkyrie'];
+  const result = parseTopLadderDeck(names.map(name => ({ name })));
+  const expected = ['Skeleton', 'Knight', 'Archers', 'Horde', 'Fireball', 'Cannon', 'Hog Rider', 'Valkyrie'];
+  assert.deepEqual(result, { cards: expected, compositionKey: JSON.stringify([...expected].sort()) });
+  const duplicate = names.map((name, index) => ({ name: index === 1 ? 'Skeleton' : name }));
+  assert.match(parseTopLadderDeck(duplicate).error, /Дубликат ID/);
 });
