@@ -139,6 +139,7 @@ test('filtered recommendations use catalog scoring before applying the requested
     row('b', ['Knight', 'Archers']),
     row('c', ['Knight', 'Skeleton']),
     row('d', ['Archers', 'Skeleton'], { tier: 'S' }),
+    row('e', ['Knight', 'Goblins'], { winRate: 55 }),
   ];
   const result = await request('/recommend', {
     playerName: 'Player', includeCards: ['Knight'], excludeCards: ['Ice Spirit'], limit: 1,
@@ -153,9 +154,9 @@ test('filtered recommendations use catalog scoring before applying the requested
     },
   });
   assert.equal(result.statusCode, 200);
-  assert.equal(result.body.totalDecks, 2);
+  assert.equal(result.body.totalDecks, 3);
   assert.deepEqual(result.body.decks.map(({ id, cards, score, bonus }) => ({ id, cards, score, bonus })), [
-    { id: 'b', cards: ['Knight', 'Archers'], score: 80, bonus: 0 },
+    { id: 'e', cards: ['Knight', 'Goblins'], score: 55, bonus: 0 },
   ]);
 });
 

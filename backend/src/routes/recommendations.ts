@@ -60,7 +60,11 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
               excludeCards.some(card => cards.includes(card))) return [];
           return [scoreFilteredDeck(deck, cards, rawLevels, ownedEvolutions, ownedHeroes)];
         });
-        matches.sort((a, b) => b.score - a.score);
+        matches.sort((a, b) => {
+          if (a.winRate === null && b.winRate !== null) return 1;
+          if (a.winRate !== null && b.winRate === null) return -1;
+          return b.score - a.score;
+        });
         return res.json({ success: true, decks: matches.slice(0, limit), playerName, totalDecks: matches.length });
       }
 

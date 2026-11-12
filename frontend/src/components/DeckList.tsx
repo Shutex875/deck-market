@@ -795,16 +795,11 @@ const DeckList: React.FC = () => {
                               if (card.isEvolution) return `Evo${cardData.evoFile || cardData.file}`;
                               return cardData.file;
                             }).join(' ');
-                            const generatedWinRate = (
-                              Math.random() * (55.8 - 51.5) + 51.5
-                            ).toFixed(1);
                             navigate('/decks/new', {
                               state: {
                                 prefillCards: screenshotCards.map(card => card.id),
                                 prefillSlot2Type: screenshotCards[2]?.isEvolution ? 'evo' : undefined,
                                 prefillName: generatedName,
-                                prefillTier: 'A',
-                                prefillWinRate: generatedWinRate,
                                 prefillCategoryName: 'general',
                                 prefillSourceName: 'PrtScn',
                               },

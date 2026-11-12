@@ -230,8 +230,6 @@ const DeckBuilder: React.FC = () => {
     prefillCards?: unknown;
     prefillSlot2Type?: 'evo' | 'hero';
     prefillName?: string;
-    prefillTier?: string;
-    prefillWinRate?: string;
     prefillCategoryName?: string;
     prefillSourceName?: string;
   } | null;
@@ -258,8 +256,8 @@ const DeckBuilder: React.FC = () => {
   );
   const [slot2Type, setSlot2Type] = useState<'evo' | 'hero' | null>(prefillSlot2Type);
   const [name, setName] = useState(navigationState?.prefillName || '');
-  const [tier, setTier] = useState(navigationState?.prefillTier || '');
-  const [winRate, setWinRate] = useState(navigationState?.prefillWinRate || '');
+  const [tier, setTier] = useState('');
+  const [winRate, setWinRate] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [sourceId, setSourceId] = useState('');
   const [sourceUrl, setSourceUrl] = useState('');
