@@ -35,6 +35,8 @@ model SavedDeck {
   name      String
   cards     String   // JSON массив из 8 строк (порядок важен, как в колоде)
   createdAt DateTime @default(now())
+
+  @@index([playerId, createdAt])
 }
 
 model MetaDeck {
@@ -54,6 +56,9 @@ model MetaDeck {
   externalId  String?
   isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
+
+  @@index([categoryId])
+  @@index([sourceId])
 }
 
 model Category {
