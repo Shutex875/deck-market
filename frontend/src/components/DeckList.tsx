@@ -18,7 +18,7 @@ import {
   PhotoIcon,
   ArrowUpTrayIcon,
 } from '@heroicons/react/24/outline';
-import { getMetaDecks, deleteMetaDeck, getCategories, Category, getPlayers, getSavedDecks, saveDeck, SavedDeck, Player, checkDeckDuplicates, recognizeDeckScreenshot, RecognizedDeckCard, MetaDeckSortBy, SortOrder } from '../api';
+import { getMetaDecks, deleteMetaDeck, getCategories, Category, getPlayers, getSavedDecks, saveDeck, SavedDeck, Player, checkDeckDuplicates, recognizeDeckScreenshot, RecognizedDeckCard, MetaDeckSortBy, SortOrder, importMockDecks } from '../api';
 import { CardIcon } from '../utils/cardImages';
 import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
@@ -244,11 +244,7 @@ const DeckList: React.FC = () => {
     setImporting(true);
     setImportNotice(null);
     try {
-      const res = await fetch('/api/meta-decks/import-mock', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
-      });
+      const res = await importMockDecks();
       const data = await res.json();
       if (!res.ok) {
         setImportNotice({ type: 'error', message: data.error || 'Не удалось импортировать мета-колоды.' });
@@ -258,7 +254,7 @@ const DeckList: React.FC = () => {
         type: 'success',
         message: data.message || `Добавлено мета-колод: ${data.imported ?? 0}.`,
       });
-      await fetchDecks();
+      await Promise.all([fetchDecks(), fetchCategories()]);
     } catch (error) {
       console.error('Curated meta deck import failed:', error);
       setImportNotice({ type: 'error', message: 'Не удалось связаться с сервером для импорта мета-колод.' });

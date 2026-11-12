@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { createCachedRead } from './cachedRead';
 
 const API_BASE = '/api';
 
@@ -177,11 +178,18 @@ export const diagnoseDeck = (playerName: string, deckId: string) =>
   }>('/diagnose-deck', { playerName, deckId }).then(res => res.data);
 
 // === Player API ===
-export const getPlayers = () => api.get<Player[]>('/players').then(res => res.data);
+const players = createCachedRead(() => api.get<Player[]>('/players').then(res => res.data));
+export const getPlayers = players.read;
 export const getPlayer = (name: string) => api.get<Player>(`/players/${name}`).then(res => res.data);
 export const savePlayer = (data: Omit<Player, 'id' | 'createdAt' | 'updatedAt'>) =>
-  api.post<Player>('/players', data).then(res => res.data);
-export const deletePlayer = (name: string) => api.delete(`/players/${name}`).then(res => res.data);
+  api.post<Player>('/players', data).then(res => {
+    players.invalidate();
+    return res.data;
+  });
+export const deletePlayer = (name: string) => api.delete(`/players/${name}`).then(res => {
+  players.invalidate();
+  return res.data;
+});
 
 // === MetaDeck API ===
 export type MetaDeckSortBy = 'name' | 'createdAt' | 'avgElixir';
@@ -201,7 +209,13 @@ export const createMetaDeck = (data: {
 }) => api.post<MetaDeck>('/meta-decks', data).then(res => res.data);
 export const deleteMetaDeck = (id: string) => api.delete(`/meta-decks/${id}`).then(res => res.data);
 export const importDecksFromDeckshop = (category: string = 'popular') =>
-  api.post('/meta-decks/import-deckshop', { category }).then(res => res.data);
+  api.post('/meta-decks/import-deckshop', { category }).then(res => res.data).finally(invalidateDeckLookups);
+export const importMockDecks = () =>
+  fetch(`${API_BASE}/meta-decks/import-mock`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  }).finally(invalidateDeckLookups);
 export interface RecognizedDeckCard {
   id: string;
   name: string;
@@ -318,9 +332,16 @@ export interface Category {
   createdAt: string;
 }
 
-export const getCategories = () => api.get<Category[]>('/categories').then(res => res.data);
-export const createCategory = (name: string) => api.post<Category>('/categories', { name }).then(res => res.data);
-export const deleteCategory = (id: string) => api.delete(`/categories/${id}`).then(res => res.data);
+const categories = createCachedRead(() => api.get<Category[]>('/categories').then(res => res.data));
+export const getCategories = categories.read;
+export const createCategory = (name: string) => api.post<Category>('/categories', { name }).then(res => {
+  categories.invalidate();
+  return res.data;
+});
+export const deleteCategory = (id: string) => api.delete(`/categories/${id}`).then(res => {
+  categories.invalidate();
+  return res.data;
+});
 
 // === Sources ===
 export interface Source {
@@ -329,9 +350,21 @@ export interface Source {
   createdAt: string;
 }
 
-export const getSources = () => api.get<Source[]>('/sources').then(res => res.data);
-export const createSource = (name: string) => api.post<Source>('/sources', { name }).then(res => res.data);
-export const deleteSource = (id: string) => api.delete(`/sources/${id}`).then(res => res.data);
+const sources = createCachedRead(() => api.get<Source[]>('/sources').then(res => res.data));
+export const getSources = sources.read;
+export const createSource = (name: string) => api.post<Source>('/sources', { name }).then(res => {
+  sources.invalidate();
+  return res.data;
+});
+export const deleteSource = (id: string) => api.delete(`/sources/${id}`).then(res => {
+  sources.invalidate();
+  return res.data;
+});
+
+function invalidateDeckLookups() {
+  categories.invalidate();
+  sources.invalidate();
+}
 
 // === Рекомендации ===
 export const recommendDecks = (

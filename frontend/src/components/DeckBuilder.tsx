@@ -287,39 +287,47 @@ const DeckBuilder: React.FC = () => {
   });
 
   // Загрузка категорий и источников
-  const loadCategoriesAndSources = async () => {
-    try {
-      let [cats, srcs] = await Promise.all([getCategories(), getSources()]);
-      let preferredCategory = navigationState?.prefillCategoryName
-        ? cats.find(category => category.name.toLocaleLowerCase() === navigationState.prefillCategoryName?.toLocaleLowerCase())
-        : undefined;
-      let preferredSource = navigationState?.prefillSourceName
-        ? srcs.find(source => source.name.toLocaleLowerCase() === navigationState.prefillSourceName?.toLocaleLowerCase())
-        : undefined;
-
-      if (navigationState?.prefillCategoryName && !preferredCategory) {
-        preferredCategory = await createCategory(navigationState.prefillCategoryName);
-        cats = [...cats, preferredCategory];
-      }
-      if (navigationState?.prefillSourceName && !preferredSource) {
-        preferredSource = await createSource(navigationState.prefillSourceName);
-        srcs = [...srcs, preferredSource];
-      }
-
-      setCategories(cats);
-      setSources(srcs);
-      if (preferredCategory) setCategoryId(preferredCategory.id);
-      else if (cats.length > 0 && !categoryId) setCategoryId(cats[0].id);
-      if (preferredSource) setSourceId(preferredSource.id);
-      else if (srcs.length > 0 && !sourceId) setSourceId(srcs[0].id);
-    } catch (err) {
-      console.error('Ошибка загрузки категорий/источников для формы колоды', err);
-      setError('Не удалось загрузить или создать категорию и источник для распознанной колоды');
-    }
-  };
-
   useEffect(() => {
-    loadCategoriesAndSources();
+    let active = true;
+    const loadCategoriesAndSources = async () => {
+      try {
+        let [cats, srcs] = await Promise.all([
+          getCategories(Boolean(navigationState?.prefillCategoryName)),
+          getSources(Boolean(navigationState?.prefillSourceName)),
+        ]);
+        if (!active) return;
+        let preferredCategory = navigationState?.prefillCategoryName
+          ? cats.find(category => category.name.toLocaleLowerCase() === navigationState.prefillCategoryName?.toLocaleLowerCase())
+          : undefined;
+        let preferredSource = navigationState?.prefillSourceName
+          ? srcs.find(source => source.name.toLocaleLowerCase() === navigationState.prefillSourceName?.toLocaleLowerCase())
+          : undefined;
+
+        if (navigationState?.prefillCategoryName && !preferredCategory) {
+          preferredCategory = await createCategory(navigationState.prefillCategoryName);
+          if (!active) return;
+          cats = [...cats, preferredCategory];
+        }
+        if (navigationState?.prefillSourceName && !preferredSource) {
+          preferredSource = await createSource(navigationState.prefillSourceName);
+          if (!active) return;
+          srcs = [...srcs, preferredSource];
+        }
+
+        setCategories(cats);
+        setSources(srcs);
+        if (preferredCategory) setCategoryId(preferredCategory.id);
+        else if (cats.length > 0 && !categoryId) setCategoryId(cats[0].id);
+        if (preferredSource) setSourceId(preferredSource.id);
+        else if (srcs.length > 0 && !sourceId) setSourceId(srcs[0].id);
+      } catch (err) {
+        if (!active) return;
+        console.error('Ошибка загрузки категорий/источников для формы колоды', err);
+        setError('Не удалось загрузить или создать категорию и источник для распознанной колоды');
+      }
+    };
+    void loadCategoriesAndSources();
+    return () => { active = false; };
   }, []);
 
   // Загрузка данных колоды при редактировании
