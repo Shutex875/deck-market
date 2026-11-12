@@ -294,39 +294,6 @@ export const updateMetaDeck = (id: string, data: {
   sourceUrl?: string;
 }) => api.put<MetaDeck>(`/meta-decks/${id}`, data).then(res => res.data);
 
-// Game
-export const getGameProgress = async (playerName: string): Promise<{
-  playerScore: number;
-  computerScore: number;
-  record: number;
-}> => {
-  const res = await fetch(`/api/game-progress/${encodeURIComponent(playerName)}`);
-  if (!res.ok) {
-    if (res.status === 404) {
-      return { playerScore: 0, computerScore: 0, record: 0 };
-    }
-    throw new Error('Ошибка загрузки прогресса');
-  }
-  return await res.json();
-};
-
-export const saveGameProgress = async (data: {
-  playerName: string;
-  playerScore: number;
-  computerScore: number;
-  record: number;
-}) => {
-  const res = await fetch('/api/game-progress', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
-  if (!res.ok) {
-    throw new Error('Ошибка сохранения прогресса');
-  }
-  return res.json();
-};
-
 // === Categories ===
 export interface Category {
   id: string;

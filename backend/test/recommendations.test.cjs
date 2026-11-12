@@ -3,6 +3,7 @@ const { test } = require('node:test');
 const axios = require('axios');
 const { createRecommendationsRouter } = require('../dist/routes/recommendations');
 const { createMetaDecksRouter } = require('../dist/routes/metaDecks');
+const { createPlayersRouter } = require('../dist/routes/players');
 const { findClanWarCombinations } = require('../dist/services/clanWarCombinations');
 
 function request(path, body, prisma, createRouter = createRecommendationsRouter, options = {}) {
@@ -226,4 +227,20 @@ test('Deckshop imports only new names and writes through one transaction per req
   assert.equal(transactions, 2);
   assert.equal(stored.get('Existing'), original);
   assert.equal(stored.get('New').avgElixir, 2.9);
+});
+
+test('game progress upsert creates the row through its player name', async () => {
+  const body = { playerName: 'Player', playerScore: 2, computerScore: 1, record: 4 };
+  const result = await request('/game-progress', body, {
+    player: { findUnique: async () => ({ name: 'Player' }) },
+    gameProgress: {
+      async upsert({ where, create, update }) {
+        assert.deepEqual(where, { playerName: 'Player' });
+        assert.deepEqual(create, body);
+        assert.deepEqual(update, { playerScore: 2, computerScore: 1, record: 4 });
+        return create;
+      },
+    },
+  }, createPlayersRouter);
+  assert.deepEqual(result, { statusCode: 200, body: { playerScore: 2, computerScore: 1, record: 4 } });
 });

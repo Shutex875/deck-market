@@ -51,7 +51,6 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
           playerScore,
           computerScore,
           record: record || 0,
-          player: { connect: { name: playerName } },
         },
       });
       res.json({
@@ -120,7 +119,10 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
   router.delete('/players/:name', async (req, res) => {
     try {
       const { name } = req.params;
-      await prisma.player.delete({ where: { name } });
+      await prisma.$transaction([
+        prisma.gameProgress.deleteMany({ where: { playerName: name } }),
+        prisma.player.delete({ where: { name } }),
+      ]);
       res.json({ success: true });
     } catch (error) {
       console.error(error);
