@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
+const axios = require('axios');
 const { createRecommendationsRouter } = require('../dist/routes/recommendations');
 const { createMetaDecksRouter } = require('../dist/routes/metaDecks');
 const { findClanWarCombinations } = require('../dist/services/clanWarCombinations');
@@ -191,4 +192,38 @@ test('duplicate check matches compositions across both catalogs with two databas
   const result = await request(path, { cards: [...cards].reverse() }, prisma, createMetaDecksRouter);
   assert.deepEqual(result, { statusCode: 200, body: { names: ['Meta', 'Saved'] } });
   assert.deepEqual(queries.map(query => query.select), [{ cards: true, name: true }, { cards: true, name: true }]);
+});
+
+test('Deckshop imports only new names and writes through one transaction per request', async t => {
+  const cards = ['Knight', 'Archers', 'Skeleton', 'Ice Spirit', 'Fireball', 'Cannon', 'Hog Rider', 'Valkyrie'];
+  const html = ['Existing', 'New', 'New'].map(name =>
+    '<article class="deck-list-item"><h4>' + name + '</h4>' +
+    cards.map(card => '<img alt="' + card + '">').join('') + '</article>'
+  ).join('');
+  t.mock.method(axios, 'get', async () => ({ status: 200, data: html }));
+  const original = { id: 'existing-id', name: 'Existing', tier: 'S' };
+  const stored = new Map([[original.name, original]]);
+  let transactions = 0;
+  const prisma = {
+    async $transaction(write) {
+      transactions++;
+      return write({
+        source: { upsert: async () => ({ id: 'source-id' }) },
+        category: { upsert: async () => ({ id: 'category-id' }) },
+        metaDeck: {
+          async upsert({ where, update, create }) {
+            assert.deepEqual(update, { name: where.name });
+            if (!stored.has(where.name)) stored.set(where.name, create);
+            return { id: stored.get(where.name).id };
+          },
+        },
+      });
+    },
+  };
+  const run = () => request('/meta-decks/import-deckshop', {}, prisma, createMetaDecksRouter);
+  assert.equal((await run()).body.imported, 1);
+  assert.equal((await run()).body.imported, 0);
+  assert.equal(transactions, 2);
+  assert.equal(stored.get('Existing'), original);
+  assert.equal(stored.get('New').avgElixir, 2.9);
 });

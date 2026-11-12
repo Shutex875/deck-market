@@ -1,6 +1,6 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { Router } from 'express';
 import type { PrismaClient } from '@prisma/client';
 import { ALL_CARDS, ALL_CARDS_DATA } from '../config/cards';
@@ -895,20 +895,11 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
   });
 
   router.post('/meta-decks/import-deckshop', async (req, res) => {
-    // ... (оставлен как в исходном файле, без изменений)
     try {
-      const { category = 'general' } = req.body;
-  
-      const deckshopSource = await prisma.source.upsert({
-        where: { name: 'deckshop' },
-        update: {},
-        create: { name: 'deckshop' },
-      });
-      const categoryRecord = await prisma.category.upsert({
-        where: { name: category },
-        update: {},
-        create: { name: category },
-      });
+      const { category = 'general' } = req.body ?? {};
+      if (typeof category !== 'string' || !category.trim()) {
+        return res.status(400).json({ error: 'Category must be a non-empty string' });
+      }
   
       const urlsToTry = [
         'https://www.deckshop.pro/ru/decks/popular',
@@ -933,7 +924,9 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
             successUrl = url;
             break;
           }
-        } catch (e) { }
+        } catch {
+          // Try the next Deckshop URL.
+        }
       }
   
       if (!html) {
@@ -988,26 +981,38 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
         });
       }
   
-      let imported = 0;
-      for (const deck of decks) {
-        const existing = await prisma.metaDeck.findUnique({ where: { name: deck.name } });
-        if (!existing) {
-          await prisma.metaDeck.create({
-            data: {
-              name: deck.name,
-              cards: JSON.stringify(deck.cards),
-              avgElixir: calculateAverageElixir(deck.cards),
-              tier: deck.tier || null,
-              winRate: deck.winRate || null,
-              sourceId: deckshopSource.id,
-              categoryId: categoryRecord.id,
-              sourceUrl: successUrl,
-              isActive: true,
-            }
+      const prepared = decks.map(deck => ({
+        id: randomUUID(),
+        name: deck.name,
+        cards: JSON.stringify(deck.cards),
+        avgElixir: calculateAverageElixir(deck.cards),
+        tier: deck.tier ?? null,
+        winRate: deck.winRate ?? null,
+        sourceUrl: successUrl,
+      }));
+      const imported = await prisma.$transaction(async tx => {
+        const source = await tx.source.upsert({
+          where: { name: 'deckshop' },
+          update: { name: 'deckshop' },
+          create: { name: 'deckshop' },
+        });
+        const categoryRecord = await tx.category.upsert({
+          where: { name: category },
+          update: { name: category },
+          create: { name: category },
+        });
+        let inserted = 0;
+        for (const deck of prepared) {
+          const saved = await tx.metaDeck.upsert({
+            where: { name: deck.name },
+            update: { name: deck.name },
+            create: { ...deck, sourceId: source.id, categoryId: categoryRecord.id },
+            select: { id: true },
           });
-          imported++;
+          if (saved.id === deck.id) inserted++;
         }
-      }
+        return inserted;
+      });
   
       res.json({
         success: true,
@@ -1015,10 +1020,10 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
         total: decks.length,
         message: `Импортировано ${imported} колод из ${decks.length} найденных.`
       });
-    } catch (error: any) {
-      console.error('Import error:', error.message);
+    } catch (error) {
+      console.error('Deckshop import failed:', error);
       res.status(500).json({
-        error: 'Ошибка при импорте: ' + error.message,
+        error: 'Не удалось импортировать колоды из Deckshop.',
         suggestion: 'Попробуйте добавить колоды вручную через форму "Добавить мета-колоду".'
       });
     }
