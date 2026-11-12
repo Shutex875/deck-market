@@ -62,13 +62,12 @@ const DraggableCardInSlot = memo(({
   isDark: boolean;
 }) => {
   const draggableId = `slot-card-${slotIndex}`;
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useDraggable({
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: draggableId,
     data: { slotIndex, cardId },
   });
   const style = {
     transform: CSS.Transform.toString(transform),
-    transition,
     opacity: isDragging ? 0.5 : 1,
   };
 

@@ -60,7 +60,7 @@ const PlayerList: React.FC = () => {
     const evolutions = JSON.parse(player.evolutions);
     const heroes = JSON.parse(player.heroes);
     const cardCount = Object.keys(levels).length;
-    const totalLevel = Object.values(levels).reduce((sum: number, lv: any) => sum + Number(lv), 0);
+    const totalLevel = Object.values(levels).reduce<number>((sum, level) => sum + Number(level), 0);
     const avgLevel = cardCount > 0 ? totalLevel / cardCount : 0;
     const heroCount = heroes.filter(isHeroUpgradeId).length;
     return { cardCount, avgLevel, evolutions: evolutions.length, heroCount };

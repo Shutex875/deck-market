@@ -23,14 +23,16 @@ jobs:
       with:
         node-version: ${{ matrix.node-version }}
 
-    - name: Install & Build Backend
+    - name: Install & Test Backend
       run: |
         cd backend
-        npm install
-        npm run build
+        npm ci
+        npx prisma generate
+        npm test
 
     - name: Install & Build Frontend
       run: |
         cd frontend
-        npm install
+        npm ci
+        npm run typecheck
         npm run build
