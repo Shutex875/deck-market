@@ -5,6 +5,9 @@ services:
     restart: always
     ports:
       - "5000:5000"
+    env_file:
+      - path: ./backend/.env
+        required: false
     environment:
       - DATABASE_URL=file:./dev.db
       - PORT=5000
