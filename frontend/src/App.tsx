@@ -10,6 +10,7 @@ const PlayerList = lazy(() => import('./components/PlayerList'));
 const PlayerForm = lazy(() => import('./components/PlayerForm'));
 const DeckList = lazy(() => import('./components/DeckList'));
 const DeckBuilder = lazy(() => import('./components/DeckBuilder'));
+const AdminPanel = lazy(() => import('./components/AdminPanel'));
 const Recommend = lazy(() => import('./components/Recommend'));
 const ClanWarRecommend = lazy(() => import('./components/ClanWarRecommend'));
 const Diagnose = lazy(() => import('./components/Diagnose'));
@@ -63,6 +64,7 @@ function AppContent({ user, logout, updateUser }: {
           <NavLink to="/" className={navLinkClass}>Главная</NavLink>
           <NavLink to="/players" className={navLinkClass}>Аккаунты</NavLink>
           <NavLink to="/decks" className={navLinkClass}>Мета-колоды</NavLink>
+          {user.canManageCatalog && <NavLink to="/admin" className={navLinkClass}>Админ-панель</NavLink>}
           <NavLink to="/profile" title="Настройки профиля" className={state => `ml-auto ${navLinkClass(state)}`}>
             {user.username}
           </NavLink>
@@ -94,6 +96,7 @@ function AppContent({ user, logout, updateUser }: {
             <Route path="/players/new" element={<PlayerForm />} />
             <Route path="/players/edit/:name" element={<PlayerForm />} />
             <Route path="/decks" element={<DeckList canManageCatalog={user.canManageCatalog} />} />
+            <Route path="/admin" element={user.canManageCatalog ? <AdminPanel /> : <Navigate to="/decks" replace />} />
             <Route path="/decks/new" element={user.canManageCatalog ? <DeckBuilder /> : <Navigate to="/decks" replace />} />
             <Route path="/decks/edit/:id" element={user.canManageCatalog ? <DeckBuilder /> : <Navigate to="/decks" replace />} />
             <Route path="/recommend" element={<Recommend />} />

@@ -22,6 +22,15 @@ api.interceptors.response.use(undefined, error => {
   return Promise.reject(error);
 });
 
+export interface AdminOverview {
+  totals: { users: number; players: number; metaDecks: number; savedDecks: number };
+  accounts: { id: string; username: string; createdAt: string; profiles: number; isOwner: boolean }[];
+  pageCount: number;
+}
+
+export const getAdminOverview = (page: number, signal: AbortSignal) =>
+  api.get<AdminOverview>('/admin/overview', { params: { page }, signal }).then(res => res.data);
+
 // === Типы ===
 export interface Player {
   id: string;
@@ -110,6 +119,8 @@ export interface MetaDeck {
   slot2Type?: 'evo' | 'hero' | null;
 }
 
+export type RecommendationMode = 'account' | 'meta';
+
 export interface RecommendResponse {
   success: boolean;
   totalDecks: number;
@@ -119,8 +130,6 @@ export interface RecommendResponse {
     cards: string[];
     cardLevels: Record<string, number>;
     averageLevel: number;
-export type RecommendationMode = 'account' | 'meta';
-
     missingCardsCount: number;
     score: number;
     bonus: number;
@@ -366,6 +375,7 @@ export const recommendDecks = (
   includeCards: string[] = [],
   excludeCards: string[] = [],
   signal?: AbortSignal,
+  mode?: RecommendationMode,
 ) =>
   api.post<RecommendResponse>('/recommend', { playerName, limit, includeCards, excludeCards, mode }, { signal })
     .then(res => res.data);
@@ -375,7 +385,6 @@ export const recommendCW = (
   limit: number = 10,
   includeCards?: string[],
   excludeCards?: string[],
-  mode?: RecommendationMode,
   requiredDeckIds?: string[],
   signal?: AbortSignal,
 ) =>
