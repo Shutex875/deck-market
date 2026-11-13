@@ -162,6 +162,24 @@ test('regular recommendations preserve limit defaults, numeric strings and bound
   }
 });
 
+test('explicit recommendation mode controls ranking independently of card filters', async () => {
+  const cards = ['Knight', 'Archers', 'Skeleton', 'Ice Spirit', 'Fireball', 'Cannon', 'Hog Rider', 'Valkyrie'];
+  const player = { levels: JSON.stringify(Object.fromEntries(cards.map(card => [card, 14]))), evolutions: '[]', heroes: '[]' };
+  const deck = { id: 'deck', cards: JSON.stringify(cards), winRate: 55, slot2Type: null, source: { name: 'Source' } };
+  const queries = [];
+  const prisma = {
+    player: { findUnique: async () => player },
+    metaDeck: { findMany: async query => { queries.push(query); return [deck]; } },
+  };
+  const recommend = (mode, filters = {}) => request('/recommend', { playerName: 'Player', mode, ...filters }, prisma);
+  const account = await recommend('account', { includeCards: ['Hog Rider'] });
+  assert.equal(account.body.decks[0].averageLevel, 14);
+  assert.deepEqual(queries[0].where, { isActive: true });
+  assert.equal((await recommend('account', { excludeCards: ['Hog Rider'] })).body.totalDecks, 0);
+  assert.equal((await recommend('meta')).body.decks[0].score, 55);
+  assert.equal(queries[2].where, undefined);
+});
+
 test('Clan War accepts card filters and required deck IDs with the exact account name', async () => {
   const result = await request('/recommend-cw', {
     playerName: ' Player ',

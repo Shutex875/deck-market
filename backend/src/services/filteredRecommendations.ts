@@ -1,10 +1,10 @@
-import type { MetaDeck, Source } from '@prisma/client';
+import type { Category, MetaDeck, Source } from '@prisma/client';
 import { cardDataMap } from '../config/cards';
 
 const tierScores = new Map([['S', 100], ['A', 80], ['B', 60]]);
 
 export function scoreFilteredDeck(
-  deck: MetaDeck & { source: Source },
+  deck: MetaDeck & { category: Category; source: Source },
   cards: string[],
   levels: Record<string, number>,
   evolutions: ReadonlySet<string>,
@@ -32,8 +32,7 @@ export function scoreFilteredDeck(
     bonus: 0,
     tier,
     winRate,
-    // Keep the labels used by the filtered catalog view.
-    category: { name: source.name },
+    category: deck.category,
     source: { name: source.name },
     slot2Type,
     slotStatus: [firstType, secondType, thirdType].map((type, slot) => ({ slot, type, active: type !== 'none' })),

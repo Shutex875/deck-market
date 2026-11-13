@@ -119,6 +119,8 @@ export interface RecommendResponse {
     cards: string[];
     cardLevels: Record<string, number>;
     averageLevel: number;
+export type RecommendationMode = 'account' | 'meta';
+
     missingCardsCount: number;
     score: number;
     bonus: number;
@@ -365,7 +367,7 @@ export const recommendDecks = (
   excludeCards: string[] = [],
   signal?: AbortSignal,
 ) =>
-  api.post<RecommendResponse>('/recommend', { playerName, limit, includeCards, excludeCards }, { signal })
+  api.post<RecommendResponse>('/recommend', { playerName, limit, includeCards, excludeCards, mode }, { signal })
     .then(res => res.data);
 
 export const recommendCW = (
@@ -373,6 +375,7 @@ export const recommendCW = (
   limit: number = 10,
   includeCards?: string[],
   excludeCards?: string[],
+  mode?: RecommendationMode,
   requiredDeckIds?: string[],
   signal?: AbortSignal,
 ) =>

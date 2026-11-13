@@ -16,6 +16,7 @@ import {
 import {
   getPlayers,
   recommendDecks,
+  type RecommendationMode,
   Player,
   saveDeck,
   deleteSavedDeck,
@@ -51,6 +52,7 @@ const Recommend: React.FC = () => {
   const [players, setPlayers] = useState<Player[]>([]);
   const [selectedPlayer, setSelectedPlayer] = useState('');
   const [limit, setLimit] = useState(1); // по умолчанию 1
+  const [mode, setMode] = useState<RecommendationMode>('account');
   const [decks, setDecks] = useState<RecommendedDeck[]>([]);
   const [totalDecks, setTotalDecks] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -88,7 +90,7 @@ const Recommend: React.FC = () => {
 
   const hasActiveFilter = includeCards.length > 0 || excludeCards.length > 0;
 
-  const handleRecommend = async (include = includeCards, exclude = excludeCards, count = limit) => {
+  const handleRecommend = async (include = includeCards, exclude = excludeCards, count = limit, ranking = mode) => {
     if (!selectedPlayer) {
       setError('Выберите аккаунт');
       return;
@@ -101,7 +103,7 @@ const Recommend: React.FC = () => {
     setDecks([]);
     setTotalDecks(null);
     try {
-      const result = await recommendDecks(selectedPlayer, count, include, exclude, request.signal);
+      const result = await recommendDecks(selectedPlayer, count, include, exclude, request.signal, ranking);
       if (request.signal.aborted) return;
       setDecks(result.decks);
       setTotalDecks(result.totalDecks);
@@ -243,6 +245,19 @@ const Recommend: React.FC = () => {
               } border focus:outline-none`}
             />
           </div>
+          <label className="flex flex-col gap-1 text-sm font-medium">
+            Режим подбора
+            <select value={mode}
+              className="rounded border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700"
+              onChange={event => {
+                const ranking = event.target.value === 'meta' ? 'meta' : 'account';
+                setMode(ranking);
+                if (recommendRequest.current) void handleRecommend(includeCards, excludeCards, limit, ranking);
+              }}>
+              <option value="account">Под мой аккаунт</option>
+              <option value="meta">По мете</option>
+            </select>
+          </label>
           <button
             onClick={() => void handleRecommend()}
             disabled={loading}
@@ -334,8 +349,10 @@ const Recommend: React.FC = () => {
                     </h3>
                     <div className={`text-sm flex items-center gap-2 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
                       <ChartBarIcon className="w-4 h-4" />
-                      <span className="font-semibold">{safeString(deck.score)}</span>
-                      <span className="ml-1">(Ср.ур. {safeString(deck.averageLevel)})</span>
+                      <span className="font-semibold">{mode === 'account'
+                        ? `Оценка ${deck.score.toFixed(2)}`
+                        : deck.winRate !== null ? `Винрейт ${deck.winRate}%`
+                          : deck.tier ? `Тир ${deck.tier}` : 'Без оценки меты'}</span>
                     </div>
                   </div>
 
@@ -343,10 +360,12 @@ const Recommend: React.FC = () => {
                     <span>Категория: {safeString(deck.category)}</span>
                     <span>Источник: {safeString(deck.source)}</span>
                     {deck.tier && <span>Тир: {safeString(deck.tier)}</span>}
-                    {deck.winRate && <span>Винрейт: {safeString(deck.winRate)}%</span>}
-                    {deck.bonus > 0 && (
-                      <span className="text-green-600">+{safeString(deck.bonus)} бонус</span>
-                    )}
+                    {mode === 'account' && deck.winRate !== null && <span>Винрейт: {deck.winRate}%</span>}
+                    <p className="w-full">
+                      {mode === 'account'
+                        ? `Средний уровень ${deck.averageLevel.toFixed(2)} + бонус слотов ${deck.bonus.toFixed(2)}. Недостающие карты считаются за 1-й уровень.`
+                        : `Сначала по винрейту, при его отсутствии — по тиру. Средний уровень на аккаунте: ${deck.averageLevel.toFixed(2)}.`}
+                    </p>
                     {deck.replacements && deck.replacements.length > 0 && (
                       <div className="text-xs text-orange-500 w-full mt-1">
                         {deck.replacements.map((r, i) => (

@@ -42,6 +42,9 @@ const recommendationRequest = z.object({
   includeCards: cardFilter,
   excludeCards: cardFilter,
 }, { error: 'Request body must be an object' });
+const ordinaryRecommendationRequest = recommendationRequest.extend({
+  mode: z.enum(['account', 'meta']).optional(),
+});
 const clanWarRequest = recommendationRequest.extend({
   requiredDeckIds: z.array(
     z.string({ error: requiredDeckIdsError }),
@@ -61,10 +64,13 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
 
   router.post('/recommend', async (req, res) => {
     try {
-      const parsed = recommendationRequest.safeParse(req.body ?? {});
+      const parsed = ordinaryRecommendationRequest.safeParse(req.body ?? {});
       if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
-      const { playerName, limit: requestedLimit, includeCards, excludeCards } = parsed.data;
+      const { playerName, limit: requestedLimit, includeCards, excludeCards, mode } = parsed.data;
       const limit = normalizeLimit(requestedLimit, 10);
+      const ranking = mode ?? (includeCards.length || excludeCards.length ? 'meta' : 'account');
+      const matchesCards = (cards: string[]) =>
+        includeCards.every(card => cards.includes(card)) && !excludeCards.some(card => cards.includes(card));
 
       const player = await prisma.player.findUnique({ where: { ownerId_name: { ownerId: userId(res), name: playerName } } });
       if (!player) return res.status(404).json({ error: 'Player not found' });
@@ -73,17 +79,16 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
       const evolutions = JSON.parse(player.evolutions);
       const heroes = JSON.parse(player.heroes);
 
-      if (includeCards.length || excludeCards.length) {
+      if (ranking === 'meta') {
         const catalog = await prisma.metaDeck.findMany({
           orderBy: { name: 'asc' },
-          include: { source: true },
+          include: { category: true, source: true },
         });
         const ownedEvolutions = new Set<string>(evolutions);
         const ownedHeroes = new Set<string>(heroes);
         const matches = catalog.flatMap(deck => {
           const cards: string[] = JSON.parse(deck.cards);
-          if (!includeCards.every(card => cards.includes(card)) ||
-              excludeCards.some(card => cards.includes(card))) return [];
+          if (!matchesCards(cards)) return [];
           return [scoreFilteredDeck(deck, cards, rawLevels, ownedEvolutions, ownedHeroes)];
         });
         matches.sort((a, b) => {
@@ -129,6 +134,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
           evolutions,
           filteredHeroes
         );
+        if (!matchesCards(changedCards)) continue;
 
         // Расчёт среднего уровня по changedCards
         let totalLevel = 0;
