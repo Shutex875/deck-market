@@ -9,10 +9,11 @@ const { parseTopLadderDeck } = require('../dist/services/topLadderParser');
 
 function request(path, body, prisma, createRouter = createRecommendationsRouter, options = {}) {
   const router = createRouter(prisma);
-  const route = router.stack.find(layer => layer.route?.path === path).route;
+  const route = router.stack.find(layer => layer.route?.path === path &&
+    (!options.method || layer.route.methods[options.method])).route;
   const response = { statusCode: 200 };
   const res = {
-    locals: { user: { id: 'user-a' } },
+    locals: { user: { id: 'user-a', canManageCatalog: options.canManageCatalog ?? true } },
     status(code) {
       response.statusCode = code;
       return this;
@@ -22,8 +23,26 @@ function request(path, body, prisma, createRouter = createRecommendationsRouter,
       return this;
     },
   };
-  return Promise.resolve(route.stack[0].handle({ body, ...options }, res)).then(() => response);
+  const req = { body, ...options };
+  async function run(index) {
+    let next;
+    await route.stack[index].handle(req, res, () => { next = run(index + 1); });
+    await next;
+  }
+  return run(0).then(() => response);
 }
+
+test('catalog writes reject regular users before accessing the database', async () => {
+  const routes = createMetaDecksRouter({}).stack.flatMap(({ route }) =>
+    ['post', 'put', 'delete'].filter(method => route?.methods[method] &&
+      route.path !== '/meta-decks/check-duplicates').map(method => [route.path, method]),
+  );
+  assert.ok(routes.length > 0);
+  for (const [path, method] of routes) {
+    const result = await request(path, {}, {}, createMetaDecksRouter, { canManageCatalog: false, method });
+    assert.equal(result.statusCode, 403, path);
+  }
+});
 
 test('saved deck deletion requires a matching account', async () => {
   const deletes = [];

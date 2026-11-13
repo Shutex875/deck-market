@@ -31,7 +31,7 @@ test('registration normalizes the login and stores only password and session has
   const res = response();
   await register({ body: { username: '  Игрок  ', password }, secure: true }, res);
   assert.equal(res.statusCode, 201);
-  assert.deepEqual(res.body, { id: 'user-id', username: 'игрок' });
+  assert.deepEqual(res.body, { id: 'user-id', username: 'игрок', canManageCatalog: false });
   assert.notEqual(saved.passwordHash, password);
   assert.ok(await verifyPassword(password, saved.passwordHash));
   assert.equal(await verifyPassword('another password', saved.passwordHash), false);
@@ -69,7 +69,7 @@ test('authentication rejects missing and expired cookies and supplies the sessio
   let passed = false;
   await guard(req, authorized, () => { passed = true; });
   assert.ok(passed);
-  assert.deepEqual(authorized.locals.user, user);
+  assert.deepEqual(authorized.locals.user, { ...user, canManageCatalog: false });
 });
 
 test('state-changing API requests require the application header', () => {
@@ -112,7 +112,7 @@ test('profile changes require the current password and only replace sessions on 
   assert.equal((await submit({ username: 'new-login', currentPassword: 'wrong password' })).statusCode, 403);
   assert.equal(writes.length, 0);
   const rename = await submit({ username: ' New-Login ', currentPassword });
-  assert.deepEqual(rename.body, { id: user.id, username: 'new-login' });
+  assert.deepEqual(rename.body, { id: user.id, username: 'new-login', canManageCatalog: false });
   assert.deepEqual(writes[0].data, { username: 'new-login' });
   assert.equal(rename.session, undefined);
 

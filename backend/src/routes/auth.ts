@@ -18,6 +18,17 @@ const profileUpdate = z.object({
 });
 const publicUser = { id: true, username: true } as const;
 
+function sessionUser(user: { id: string; username: string }) {
+  return { id: user.id, username: user.username, canManageCatalog: user.id === process.env.CATALOG_OWNER_ID };
+}
+
+export const requireCatalogOwner: RequestHandler = (_req, res, next) => {
+  if (res.locals.user?.canManageCatalog !== true) {
+    return res.status(403).json({ error: 'Изменять общий каталог может только его владелец' });
+  }
+  next();
+};
+
 function hasPrismaCode(error: unknown, code: string) {
   return error !== null && typeof error === 'object' && 'code' in error && error.code === code;
 }
@@ -91,7 +102,7 @@ export function requireSession(prisma: PrismaClient): RequestHandler {
       res.setHeader('X-BastDecks-Session', 'expired');
       return res.status(401).json({ error: 'Войдите в систему' });
     }
-    res.locals.user = session.user;
+    res.locals.user = sessionUser(session.user);
     next();
   };
 }
@@ -124,7 +135,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         select: publicUser,
       });
       res.cookie(cookieName, session.token, { ...cookieOptions(req), maxAge: sessionDuration });
-      return res.status(201).json(user);
+      return res.status(201).json(sessionUser(user));
     } catch (error) {
       if (hasPrismaCode(error, 'P2002')) {
         return res.status(409).json({ error: 'Этот логин уже занят' });
@@ -158,7 +169,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       throw error;
     }
     res.cookie(cookieName, session.token, { ...cookieOptions(req), maxAge: sessionDuration });
-    res.json({ id: user.id, username: user.username });
+    res.json(sessionUser(user));
   });
 
   router.get('/me', sessionRequired, (_req, res) => res.json(res.locals.user));
@@ -182,7 +193,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
       return res.status(400).json({ error: 'Новый пароль должен отличаться от текущего' });
     }
     if (nextUsername === user.username && !newPassword) {
-      return res.json({ id: user.id, username: user.username });
+      return res.json(sessionUser(user));
     }
 
     const session = newPassword ? newSession() : undefined;
@@ -202,7 +213,7 @@ export function createAuthRouter(prisma: PrismaClient): Router {
         select: publicUser,
       });
       if (session) res.cookie(cookieName, session.token, { ...cookieOptions(req), maxAge: sessionDuration });
-      res.json(updated);
+      res.json(sessionUser(updated));
     } catch (error) {
       if (hasPrismaCode(error, 'P2002')) {
         return res.status(409).json({ error: 'Этот логин уже занят' });

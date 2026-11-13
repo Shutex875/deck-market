@@ -41,7 +41,7 @@ function parseDeckCards(value: string): string[] {
 
 const deckComposition = (cards: string[]) => JSON.stringify([...cards].sort());
 
-const DeckList: React.FC = () => {
+const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog }) => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
   const navigate = useNavigate();
@@ -440,6 +440,7 @@ const DeckList: React.FC = () => {
           >
             <ArrowPathIcon className={`w-4 h-4 ${importing ? 'animate-spin' : ''}`} />
             {importing ? 'Импорт...' : 'Импортировать Мета-колоды'}
+        {canManageCatalog && (
           </button>
         </div>
       </div>
@@ -472,6 +473,7 @@ const DeckList: React.FC = () => {
           className={`rounded px-3 py-1 transition-colors duration-200 ${
             isDark
               ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
+        )}
               : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
           } border focus:outline-none focus:ring-2 focus:ring-blue-500/50`}
         >
@@ -632,6 +634,7 @@ const DeckList: React.FC = () => {
 
                   <div className="mt-auto pt-3">
                     <div className="mx-auto grid w-full max-w-[19rem] grid-cols-4 gap-1.5 lg:max-w-none lg:grid-cols-8">
+                      {canManageCatalog && <>
                       {cards.map((card, index) => (
                         <div key={index} className={`aspect-[3/4] min-w-0 rounded-md border p-0.5 ${getSlotClass(card, index, slot2TypeFromDeck)}`}>
                           <CardIcon
@@ -654,6 +657,7 @@ const DeckList: React.FC = () => {
       {/* Модалка фильтра по картам */}
       <DeckFilterModal
         isOpen={isFilterModalOpen}
+                      </>}
         onClose={() => setIsFilterModalOpen(false)}
         onApply={handleApplyFilter}
         onClear={handleClearFilter}

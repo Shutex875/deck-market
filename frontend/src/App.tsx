@@ -1,5 +1,5 @@
 import React, { lazy, Suspense, useState } from 'react';
-import { BrowserRouter as Router, Routes, Route, NavLink } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, NavLink, Navigate } from 'react-router-dom';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
 import { SunIcon, MoonIcon } from '@heroicons/react/24/outline';
 import AuthGate from './components/AuthGate';
@@ -93,9 +93,9 @@ function AppContent({ user, logout, updateUser }: {
             <Route path="/player-stats" element={<PlayerStats />} />
             <Route path="/players/new" element={<PlayerForm />} />
             <Route path="/players/edit/:name" element={<PlayerForm />} />
-            <Route path="/decks" element={<DeckList />} />
-            <Route path="/decks/new" element={<DeckBuilder />} />
-            <Route path="/decks/edit/:id" element={<DeckBuilder />} />
+            <Route path="/decks" element={<DeckList canManageCatalog={user.canManageCatalog} />} />
+            <Route path="/decks/new" element={user.canManageCatalog ? <DeckBuilder /> : <Navigate to="/decks" replace />} />
+            <Route path="/decks/edit/:id" element={user.canManageCatalog ? <DeckBuilder /> : <Navigate to="/decks" replace />} />
             <Route path="/recommend" element={<Recommend />} />
             <Route path="/clanwar" element={<ClanWarRecommend />} />
             <Route path="/my-decks" element={<SavedDecks />} />

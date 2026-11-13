@@ -2,7 +2,7 @@ import axios from 'axios';
 import { createHash, randomUUID } from 'crypto';
 import { Router } from 'express';
 import type { PrismaClient } from '@prisma/client';
-import { userId } from './auth';
+import { requireCatalogOwner, userId } from './auth';
 import { ALL_CARDS_DATA } from '../config/cards';
 import { calculateAverageElixir } from '../config/elixirCosts';
 import { parseDeckshopDecks } from '../services/deckshopParser';
@@ -286,7 +286,7 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
     }
   });
 
-  router.post('/meta-decks/recognize-image', async (req, res) => {
+  router.post('/meta-decks/recognize-image', requireCatalogOwner, async (req, res) => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
       return res.status(503).json({
@@ -495,7 +495,7 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
     }
   });
 
-  router.post('/meta-decks/import-top', async (_req, res) => {
+  router.post('/meta-decks/import-top', requireCatalogOwner, async (_req, res) => {
     if (topLadderImportCache && topLadderImportCache.expiresAt > Date.now()) {
       return res.json({ ...topLadderImportCache.result, cached: true });
     }
@@ -800,9 +800,10 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
     }
   });
   
-  router.delete('/meta-decks/:id', async (req, res) => {
+  router.delete('/meta-decks/:id', requireCatalogOwner, async (req, res) => {
     try {
       const { id } = req.params;
+      if (typeof id !== 'string') return res.status(400).json({ error: 'Invalid ID' });
       await prisma.metaDeck.delete({ where: { id } });
       res.json({ success: true });
     } catch (error) {
@@ -827,9 +828,10 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
   });
   
   // Обновить мета-колоду
-  router.put('/meta-decks/:id', async (req, res) => {
+  router.put('/meta-decks/:id', requireCatalogOwner, async (req, res) => {
     try {
       const { id } = req.params;
+      if (typeof id !== 'string') return res.status(400).json({ error: 'Invalid ID' });
       const { name, cards, description, slot2Type, tier, winRate, categoryId, sourceId, sourceUrl } = req.body;
       if (!name || !cards || !Array.isArray(cards) || cards.length !== 8) {
         return res.status(400).json({ error: 'Name and exactly 8 cards are required' });
@@ -865,7 +867,7 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
     }
   });
 
-  router.post('/meta-decks/import-deckshop', async (req, res) => {
+  router.post('/meta-decks/import-deckshop', requireCatalogOwner, async (req, res) => {
     try {
       const { category = 'general' } = req.body ?? {};
       if (typeof category !== 'string' || !category.trim()) {
@@ -963,7 +965,7 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
     }
   });
   
-  router.post('/meta-decks', async (req, res) => {
+  router.post('/meta-decks', requireCatalogOwner, async (req, res) => {
     try {
       const { name, cards, description, slot2Type, tier, winRate, categoryId, sourceId, sourceUrl, externalId } = req.body;
       if (!name || !cards || !Array.isArray(cards) || cards.length !== 8) {
@@ -1001,7 +1003,7 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
     }
   });
   
-  router.post('/meta-decks/import-mock', async (req, res) => {
+  router.post('/meta-decks/import-mock', requireCatalogOwner, async (req, res) => {
     try {
       const mockSource = await prisma.source.upsert({
         where: { name: 'Curated Meta' },
@@ -1075,7 +1077,7 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
     }
   });
   
-  router.post('/categories', async (req, res) => {
+  router.post('/categories', requireCatalogOwner, async (req, res) => {
     try {
       const { name } = req.body;
       if (!name) return res.status(400).json({ error: 'Name is required' });
@@ -1087,9 +1089,10 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
     }
   });
   
-  router.delete('/categories/:id', async (req, res) => {
+  router.delete('/categories/:id', requireCatalogOwner, async (req, res) => {
     try {
       const { id } = req.params;
+      if (typeof id !== 'string') return res.status(400).json({ error: 'Invalid ID' });
       const decks = await prisma.metaDeck.count({ where: { categoryId: id } });
       if (decks > 0) {
         return res.status(400).json({ error: 'Cannot delete category with existing decks' });
@@ -1112,7 +1115,7 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
     }
   });
   
-  router.post('/sources', async (req, res) => {
+  router.post('/sources', requireCatalogOwner, async (req, res) => {
     try {
       const { name } = req.body;
       if (!name) return res.status(400).json({ error: 'Name is required' });
@@ -1124,9 +1127,10 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
     }
   });
   
-  router.delete('/sources/:id', async (req, res) => {
+  router.delete('/sources/:id', requireCatalogOwner, async (req, res) => {
     try {
       const { id } = req.params;
+      if (typeof id !== 'string') return res.status(400).json({ error: 'Invalid ID' });
       const decks = await prisma.metaDeck.count({ where: { sourceId: id } });
       if (decks > 0) {
         return res.status(400).json({ error: 'Cannot delete source with existing decks' });
