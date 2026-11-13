@@ -8,6 +8,7 @@ import { createRecommendationsRouter } from './routes/recommendations';
 import healthRouter from './routes/health';
 
 dotenv.config();
+process.env.DATABASE_URL ??= 'file:../data/bastdecks.db';
 
 const prisma = new PrismaClient();
 const app = express();

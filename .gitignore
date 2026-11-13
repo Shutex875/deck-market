@@ -10,6 +10,7 @@ frontend/node_modules/
 # Базы данных разработки и артефакты Prisma
 backend/prisma/*.db
 backend/prisma/*.db-journal
+backend/data/
 
 # Сборка и кэш
 dist/
