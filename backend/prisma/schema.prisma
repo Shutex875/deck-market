@@ -7,9 +7,30 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model User {
+  id           String    @id @default(cuid())
+  username     String    @unique
+  passwordHash String
+  createdAt    DateTime  @default(now())
+  players      Player[]
+  sessions     Session[]
+}
+
+model Session {
+  tokenHash String   @id
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+
+  @@index([expiresAt])
+  @@index([userId])
+}
+
 model Player {
   id         String      @id @default(cuid())
-  name       String      @unique
+  name       String
+  ownerId    String?
+  owner      User?       @relation(fields: [ownerId], references: [id], onDelete: Restrict)
   tag        String?
   levels     String      // JSON { "Hog Rider": 13, ... }
   evolutions String      // JSON [ "Knight", ... ]
@@ -17,12 +38,14 @@ model Player {
   savedDecks SavedDeck[]
   createdAt  DateTime    @default(now())
   updatedAt  DateTime    @updatedAt
-   gameProgress  GameProgress?
+  gameProgress GameProgress?
+
+  @@unique([ownerId, name])
 }
 model GameProgress {
   id            String   @id @default(cuid())
-  playerName    String   @unique
-  player        Player   @relation(fields: [playerName], references: [name])
+  playerId      String   @unique
+  player        Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
   playerScore   Int      @default(0)
   computerScore Int      @default(0)
   record        Int      @default(0)

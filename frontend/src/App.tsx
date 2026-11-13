@@ -1,7 +1,9 @@
-import React, { lazy, Suspense } from 'react';
+import React, { lazy, Suspense, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, NavLink } from 'react-router-dom';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
 import { SunIcon, MoonIcon } from '@heroicons/react/24/outline';
+import AuthGate from './components/AuthGate';
+import type { UserSession } from './api/session';
 
 const Home = lazy(() => import('./components/Home'));
 const PlayerList = lazy(() => import('./components/PlayerList'));
@@ -13,11 +15,29 @@ const ClanWarRecommend = lazy(() => import('./components/ClanWarRecommend'));
 const Diagnose = lazy(() => import('./components/Diagnose'));
 const SavedDecks = lazy(() => import('./components/SavedDecks'));
 const PlayerStats = lazy(() => import('./components/PlayerStats'));
+const UserProfile = lazy(() => import('./components/UserProfile'));
 
 // ---------- Основной компонент App ----------
-function AppContent() {
+function AppContent({ user, logout, updateUser }: {
+  user: UserSession;
+  logout: () => Promise<void>;
+  updateUser: (user: UserSession) => void;
+}) {
   const { theme, toggleTheme } = useTheme();
   const isDark = theme === 'dark';
+  const [logoutError, setLogoutError] = useState('');
+  const [loggingOut, setLoggingOut] = useState(false);
+
+  const handleLogout = async () => {
+    setLoggingOut(true);
+    setLogoutError('');
+    try {
+      await logout();
+    } catch {
+      setLogoutError('Не удалось выйти. Попробуйте ещё раз.');
+      setLoggingOut(false);
+    }
+  };
 
   const navLinkClass = ({ isActive }: { isActive: boolean }) =>
     `px-3 py-2 rounded-md text-sm font-medium transition-all duration-200 ${
@@ -43,9 +63,16 @@ function AppContent() {
           <NavLink to="/" className={navLinkClass}>Главная</NavLink>
           <NavLink to="/players" className={navLinkClass}>Аккаунты</NavLink>
           <NavLink to="/decks" className={navLinkClass}>Мета-колоды</NavLink>
+          <NavLink to="/profile" title="Настройки профиля" className={state => `ml-auto ${navLinkClass(state)}`}>
+            {user.username}
+          </NavLink>
+          <button type="button" onClick={() => void handleLogout()} disabled={loggingOut}
+            className="rounded-md px-3 py-2 text-sm underline disabled:opacity-50">
+            Выйти
+          </button>
           <button
             onClick={toggleTheme}
-            className={`ml-auto p-2 rounded-full transition-colors duration-200 ${
+            className={`p-2 rounded-full transition-colors duration-200 ${
               isDark
                 ? 'bg-gray-700 hover:bg-gray-600 text-yellow-400'
                 : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
@@ -58,6 +85,7 @@ function AppContent() {
       </nav>
 
       <div className="max-w-6xl mx-auto p-4">
+        {logoutError && <p role="alert" className="mb-3 text-sm text-red-600 dark:text-red-400">{logoutError}</p>}
         <Suspense fallback={<div className="py-12 text-center text-gray-500 dark:text-gray-400">Загрузка…</div>}>
           <Routes>
             <Route path="/" element={<Home theme={theme} />} />
@@ -72,6 +100,7 @@ function AppContent() {
             <Route path="/clanwar" element={<ClanWarRecommend />} />
             <Route path="/my-decks" element={<SavedDecks />} />
             <Route path="/diagnose" element={<Diagnose />} />
+            <Route path="/profile" element={<UserProfile user={user} onUpdate={updateUser} />} />
           </Routes>
         </Suspense>
       </div>
@@ -83,7 +112,9 @@ function App() {
   return (
     <ThemeProvider>
       <Router>
-        <AppContent />
+        <AuthGate>{(user, logout, updateUser) => (
+          <AppContent key={user.id} user={user} logout={logout} updateUser={updateUser} />
+        )}</AuthGate>
       </Router>
     </ThemeProvider>
   );

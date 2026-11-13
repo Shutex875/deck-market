@@ -1,6 +1,29 @@
 import { Router } from 'express';
 import axios from 'axios';
 import type { PrismaClient } from '@prisma/client';
+import { z } from 'zod';
+import { userId } from './auth';
+
+function storedJson(schema: z.ZodType) {
+  return z.string().refine(value => {
+    try { return schema.safeParse(JSON.parse(value)).success; }
+    catch { return false; }
+  });
+}
+
+const profileData = z.object({
+  tag: z.string().max(32).nullable().optional(),
+  levels: storedJson(z.record(z.string(), z.number().int().nonnegative())).optional(),
+  evolutions: storedJson(z.array(z.string())).optional(),
+  heroes: storedJson(z.array(z.string())).optional(),
+});
+const createProfile = profileData.extend({ name: z.string().trim().min(1).max(80) });
+const progressData = z.object({
+  playerName: z.string().min(1),
+  playerScore: z.number().int().nonnegative(),
+  computerScore: z.number().int().nonnegative(),
+  record: z.number().int().nonnegative().default(0),
+});
 
 export const createPlayersRouter = (prisma: PrismaClient): Router => {
   const router = Router();
@@ -8,8 +31,8 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
   router.get('/game-progress/:playerName', async (req, res) => {
     const { playerName } = req.params;
     try {
-      const progress = await prisma.gameProgress.findUnique({
-        where: { playerName },
+      const progress = await prisma.gameProgress.findFirst({
+        where: { player: { name: playerName, ownerId: userId(res) } },
       });
       if (!progress) {
         return res.status(404).json({ error: 'Прогресс не найден' });
@@ -27,31 +50,23 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
   
   // Сохранить (или обновить) прогресс
   router.post('/game-progress', async (req, res) => {
-    const { playerName, playerScore, computerScore, record } = req.body;
-    if (playerName === undefined || playerScore === undefined || computerScore === undefined) {
+    const parsed = progressData.safeParse(req.body);
+    if (!parsed.success) {
       return res.status(400).json({ error: 'Не все поля заполнены' });
     }
+    const { playerName, ...scores } = parsed.data;
     try {
       const player = await prisma.player.findUnique({
-        where: { name: playerName },
+        where: { ownerId_name: { name: playerName, ownerId: userId(res) } },
       });
       if (!player) {
         return res.status(404).json({ error: 'Игрок не найден' });
       }
   
       const progress = await prisma.gameProgress.upsert({
-        where: { playerName },
-        update: {
-          playerScore,
-          computerScore,
-          record: record || 0,
-        },
-        create: {
-          playerName,
-          playerScore,
-          computerScore,
-          record: record || 0,
-        },
+        where: { playerId: player.id },
+        update: scores,
+        create: { playerId: player.id, ...scores },
       });
       res.json({
         playerScore: progress.playerScore,
@@ -65,9 +80,12 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
   });
   
   
-  router.get('/players', async (req, res) => {
+  router.get('/players', async (_req, res) => {
     try {
-      const players = await prisma.player.findMany({ orderBy: { name: 'asc' } });
+      const players = await prisma.player.findMany({
+        where: { ownerId: userId(res) },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      });
       res.json(players);
     } catch (error) {
       console.error(error);
@@ -76,38 +94,39 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
   });
   
   router.post('/players', async (req, res) => {
+    const parsed = createProfile.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Некорректные данные аккаунта' });
     try {
-      const { name, tag, levels, evolutions, heroes } = req.body;
-      if (!name) return res.status(400).json({ error: 'Name is required' });
-  
-      const existing = await prisma.player.findUnique({ where: { name } });
-      if (existing) {
-        const updated = await prisma.player.update({
-          where: { name },
-          data: {
-            levels: levels || existing.levels,
-            evolutions: evolutions || existing.evolutions,
-            heroes: heroes || existing.heroes,
-            tag: tag === undefined ? existing.tag : tag || null,
-          }
-        });
-        return res.json(updated);
-      } else {
-        const newPlayer = await prisma.player.create({
-          data: { name, tag: tag || null, levels: levels || '{}', evolutions: evolutions || '[]', heroes: heroes || '[]' }
-        });
-        return res.json(newPlayer);
-      }
+      const player = await prisma.player.create({
+        data: { levels: '{}', evolutions: '[]', heroes: '[]', ...parsed.data, ownerId: userId(res) },
+      });
+      res.status(201).json(player);
     } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
+        return res.status(409).json({ error: 'У вас уже есть аккаунт с таким именем' });
+      }
       console.error(error);
       res.status(500).json({ error: 'Failed to save player' });
     }
+  });
+
+  router.put('/players/:name', async (req, res) => {
+    const parsed = profileData.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Некорректные данные аккаунта' });
+    const { count } = await prisma.player.updateMany({
+      where: { name: req.params.name, ownerId: userId(res) },
+      data: parsed.data,
+    });
+    if (!count) return res.status(404).json({ error: 'Player not found' });
+    res.json({ success: true });
   });
   
   router.get('/players/:name', async (req, res) => {
     try {
       const { name } = req.params;
-      const player = await prisma.player.findUnique({ where: { name } });
+      const player = await prisma.player.findUnique({
+        where: { ownerId_name: { name, ownerId: userId(res) } },
+      });
       if (!player) return res.status(404).json({ error: 'Player not found' });
       res.json(player);
     } catch (error) {
@@ -119,10 +138,8 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
   router.delete('/players/:name', async (req, res) => {
     try {
       const { name } = req.params;
-      await prisma.$transaction([
-        prisma.gameProgress.deleteMany({ where: { playerName: name } }),
-        prisma.player.delete({ where: { name } }),
-      ]);
+      const { count } = await prisma.player.deleteMany({ where: { name, ownerId: userId(res) } });
+      if (!count) return res.status(404).json({ error: 'Player not found' });
       res.json({ success: true });
     } catch (error) {
       console.error(error);

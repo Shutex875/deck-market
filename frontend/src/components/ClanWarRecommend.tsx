@@ -1,3 +1,4 @@
+import ProfileSwitcher from './ProfileSwitcher';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
@@ -333,31 +334,14 @@ const ClanWarRecommend: React.FC = () => {
         isDark ? 'bg-gray-800' : 'bg-white'
       }`}>
         <div className="flex flex-wrap items-end gap-4">
-          <div className="flex-1 min-w-[200px]">
-            <label className={`block font-medium mb-1 ${
-              isDark ? 'text-gray-300' : 'text-gray-700'
-            }`}>Аккаунт</label>
-            <select
-              value={selectedPlayer}
-              onChange={(e) => {
-                recommendationRequest.current?.abort();
-                setSelectedPlayer(e.target.value);
-                clearDeckSelection();
-                setResult(null);
-                setError('');
-                setLoading(false);
-              }}
-              className={`w-full rounded px-3 py-2 transition-colors duration-200 ${
-                isDark
-                  ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
-                  : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
-              } border focus:outline-none`}
-            >
-              {players.map(p => (
-                <option key={p.id} value={p.name}>{p.name}</option>
-              ))}
-            </select>
-          </div>
+          <ProfileSwitcher profiles={players} value={selectedPlayer} className="flex-1 min-w-[200px]" onChange={name => {
+            recommendationRequest.current?.abort();
+            setSelectedPlayer(name);
+            clearDeckSelection();
+            setResult(null);
+            setError('');
+            setLoading(false);
+          }} />
           <div>
             <label className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
               Кол-во связок

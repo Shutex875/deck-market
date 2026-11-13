@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -17,6 +17,34 @@ import { getPlayers, deletePlayer, Player } from '../api';
 import { useTheme } from '../context/ThemeContext';
 import { isHeroUpgradeId } from '../utils/clashRoyaleAccountSync';
 
+const sortLabels = {
+  name: 'Имя',
+  avgLevel: 'Средний уровень',
+  cardCount: 'Количество карт',
+  evolutions: 'Количество эволюций',
+  heroCount: 'Количество героев',
+};
+type PlayerSort = keyof typeof sortLabels;
+type CollectionFilter = 'any' | 'owned' | 'missing';
+
+function getPlayerStats(player: Player) {
+  const levels: Record<string, number | string> = JSON.parse(player.levels);
+  const evolutions: string[] = JSON.parse(player.evolutions);
+  const heroes: string[] = JSON.parse(player.heroes);
+  const cardCount = Object.keys(levels).length;
+  const totalLevel = Object.values(levels).reduce<number>((sum, level) => sum + Number(level), 0);
+  return {
+    cardCount,
+    avgLevel: cardCount ? totalLevel / cardCount : 0,
+    evolutions: new Set(evolutions).size,
+    heroCount: new Set(heroes.filter(isHeroUpgradeId)).size,
+  };
+}
+
+function matchesCollection(count: number, filter: CollectionFilter) {
+  return filter === 'any' || (filter === 'owned' ? count > 0 : count === 0);
+}
+
 const PlayerList: React.FC = () => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
@@ -26,9 +54,11 @@ const PlayerList: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterEvo, setFilterEvo] = useState(false);
-  const [filterHero, setFilterHero] = useState(false);
-  const [sortBy, setSortBy] = useState<'name' | 'avgLevel' | 'cardCount'>('name');
+  const [filterEvo, setFilterEvo] = useState<CollectionFilter>('any');
+  const [filterHero, setFilterHero] = useState<CollectionFilter>('any');
+  const [sortBy, setSortBy] = useState<PlayerSort>('avgLevel');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const accounts = useMemo(() => players.map(player => ({ player, stats: getPlayerStats(player) })), [players]);
 
   const fetchPlayers = async () => {
     try {
@@ -55,34 +85,22 @@ const PlayerList: React.FC = () => {
     }
   };
 
-  const getPlayerStats = (player: Player) => {
-    const levels = JSON.parse(player.levels);
-    const evolutions = JSON.parse(player.evolutions);
-    const heroes = JSON.parse(player.heroes);
-    const cardCount = Object.keys(levels).length;
-    const totalLevel = Object.values(levels).reduce<number>((sum, level) => sum + Number(level), 0);
-    const avgLevel = cardCount > 0 ? totalLevel / cardCount : 0;
-    const heroCount = heroes.filter(isHeroUpgradeId).length;
-    return { cardCount, avgLevel, evolutions: evolutions.length, heroCount };
-  };
-
-  const filteredPlayers = players.filter(player => {
-    const nameMatch = player.name.toLowerCase().includes(searchTerm.toLowerCase());
-    if (!nameMatch) return false;
-    const stats = getPlayerStats(player);
-    if (filterEvo && stats.evolutions === 0) return false;
-    if (filterHero && stats.heroCount === 0) return false;
-    return true;
+  const search = searchTerm.trim().toLowerCase();
+  const tagSearch = search.replace(/^#/, '');
+  const direction = sortOrder === 'asc' ? 1 : -1;
+  const sortedPlayers = accounts.filter(({ player, stats }) =>
+    (player.name.toLowerCase().includes(search) ||
+      (tagSearch && player.tag?.toLowerCase().includes(tagSearch))) &&
+    matchesCollection(stats.evolutions, filterEvo) &&
+    matchesCollection(stats.heroCount, filterHero)
+  ).sort((a, b) => {
+    const byName = a.player.name.localeCompare(b.player.name);
+    if (sortBy === 'name') return direction * byName;
+    return direction * (a.stats[sortBy] - b.stats[sortBy]) || byName;
   });
-
-  const sortedPlayers = [...filteredPlayers].sort((a, b) => {
-    const statsA = getPlayerStats(a);
-    const statsB = getPlayerStats(b);
-    if (sortBy === 'name') return a.name.localeCompare(b.name);
-    if (sortBy === 'avgLevel') return statsB.avgLevel - statsA.avgLevel;
-    if (sortBy === 'cardCount') return statsB.cardCount - statsA.cardCount;
-    return 0;
-  });
+  const controlClass = `rounded border px-3 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/50 ${
+    isDark ? 'bg-gray-700 border-gray-600 text-gray-200' : 'bg-white border-gray-300 text-gray-900'
+  }`;
 
   if (loading) {
     return (
@@ -124,7 +142,8 @@ const PlayerList: React.FC = () => {
           }`} />
           <input
             type="text"
-            placeholder="Поиск по имени..."
+            aria-label="Поиск аккаунтов"
+            placeholder="По имени или тегу…"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
             className={`w-full pl-9 pr-3 py-1 text-sm rounded border transition-colors duration-200 ${
@@ -135,37 +154,30 @@ const PlayerList: React.FC = () => {
           />
         </div>
 
-        <label className={`flex items-center gap-1 text-sm ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-          <input
-            type="checkbox"
-            checked={filterEvo}
-            onChange={() => setFilterEvo(!filterEvo)}
-            className="accent-blue-500"
-          />
-          Есть эво
-        </label>
-        <label className={`flex items-center gap-1 text-sm ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-          <input
-            type="checkbox"
-            checked={filterHero}
-            onChange={() => setFilterHero(!filterHero)}
-            className="accent-blue-500"
-          />
-          Есть герои
-        </label>
-
-        <select
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value as any)}
-          className={`border rounded px-3 py-1 text-sm transition-colors duration-200 ${
-            isDark
-              ? 'bg-gray-700 border-gray-600 text-gray-200'
-              : 'bg-white border-gray-300 text-gray-900'
-          } focus:outline-none`}
-        >
-          <option value="name">Сортировать по имени</option>
-          <option value="avgLevel">Сортировать по среднему уровню</option>
-          <option value="cardCount">Сортировать по количеству карт</option>
+        <select aria-label="Фильтр по эволюциям" className={controlClass} value={filterEvo}
+          onChange={event => setFilterEvo(event.target.value as CollectionFilter)}>
+          <option value="any">Эволюции: все</option>
+          <option value="owned">Есть эволюции</option>
+          <option value="missing">Нет эволюций</option>
+        </select>
+        <select aria-label="Фильтр по героям" className={controlClass} value={filterHero}
+          onChange={event => setFilterHero(event.target.value as CollectionFilter)}>
+          <option value="any">Герои: все</option>
+          <option value="owned">Есть герои</option>
+          <option value="missing">Нет героев</option>
+        </select>
+        <select aria-label="Сортировать аккаунты по" value={sortBy} className={controlClass}
+          onChange={event => {
+            const nextSort = event.target.value as PlayerSort;
+            setSortBy(nextSort);
+            setSortOrder(nextSort === 'name' ? 'asc' : 'desc');
+          }}>
+          {Object.entries(sortLabels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+        </select>
+        <select aria-label="Порядок сортировки аккаунтов" value={sortOrder} className={controlClass}
+          onChange={event => setSortOrder(event.target.value === 'asc' ? 'asc' : 'desc')}>
+          <option value="asc">По возрастанию</option>
+          <option value="desc">По убыванию</option>
         </select>
       </div>
 
@@ -188,8 +200,7 @@ const PlayerList: React.FC = () => {
           }}
           className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4"
         >
-          {sortedPlayers.map((player) => {
-            const stats = getPlayerStats(player);
+          {sortedPlayers.map(({ player, stats }) => {
             return (
               <motion.div
                 key={player.id}

@@ -2,6 +2,7 @@ import axios from 'axios';
 import { createHash, randomUUID } from 'crypto';
 import { Router } from 'express';
 import type { PrismaClient } from '@prisma/client';
+import { userId } from './auth';
 import { ALL_CARDS_DATA } from '../config/cards';
 import { calculateAverageElixir } from '../config/elixirCosts';
 import { parseDeckshopDecks } from '../services/deckshopParser';
@@ -257,7 +258,11 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
       const select = { cards: true, name: true } as const;
       const [metaDecks, savedDecks] = await Promise.all([
         prisma.metaDeck.findMany({ select, orderBy: { name: 'asc' } }),
-        prisma.savedDeck.findMany({ select, orderBy: [{ player: { name: 'asc' } }, { createdAt: 'desc' }] }),
+        prisma.savedDeck.findMany({
+          where: { player: { ownerId: userId(res) } },
+          select,
+          orderBy: [{ player: { name: 'asc' } }, { createdAt: 'desc' }],
+        }),
       ]);
       const composition = JSON.stringify([...cards].sort());
       const names = new Set<string>();

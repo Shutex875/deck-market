@@ -1,3 +1,4 @@
+import ProfileSwitcher from './ProfileSwitcher';
 import React, { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -11,7 +12,8 @@ import {
   SparklesIcon,
   InformationCircleIcon,
 } from '@heroicons/react/24/outline';
-import { getPlayers, Player, getSavedDecks, SavedDeck, diagnoseDeck } from '../api';
+import { getPlayers, Player, diagnoseDeck } from '../api';
+import { useSavedDecks } from '../hooks/useSavedDecks';
 import { CardIcon } from '../utils/cardImages';
 import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
@@ -81,9 +83,11 @@ const Diagnose: React.FC = () => {
   const playerParam = searchParams.get('player');
 
   const [players, setPlayers] = useState<Player[]>([]);
-  const [selectedPlayer, setSelectedPlayer] = useState(playerParam || '');
-  const [decks, setDecks] = useState<SavedDeck[]>([]);
-  const [selectedDeckId, setSelectedDeckId] = useState(deckIdParam || '');
+  const [selectedPlayer, setSelectedPlayer] = useState('');
+  const { decks, error: savedDecksError } = useSavedDecks(selectedPlayer);
+  const [preferredDeckId, setPreferredDeckId] = useState(deckIdParam || '');
+  const selectedDeck = decks.find(deck => deck.id === preferredDeckId) ?? decks[0];
+  const selectedDeckId = selectedDeck?.id ?? '';
   const [diagnosis, setDiagnosis] = useState<null | {
     deckName: string;
     totalGold: number;
@@ -108,7 +112,7 @@ const Diagnose: React.FC = () => {
       try {
         const data = await getPlayers();
         setPlayers(data);
-        if (!playerParam && data.length > 0) setSelectedPlayer(data[0].name);
+        setSelectedPlayer((data.find(player => player.name === playerParam) ?? data[0])?.name ?? '');
       } catch (err) {
         console.error(err);
       }
@@ -117,36 +121,28 @@ const Diagnose: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (selectedPlayer) {
-      const fetchDecks = async () => {
-        try {
-          const data = await getSavedDecks(selectedPlayer);
-          setDecks(data);
-          if (!selectedDeckId && data.length > 0) {
-            setSelectedDeckId(data[0].id);
-          }
-        } catch (err) {
-          console.error(err);
-        }
-      };
-      fetchDecks();
-    }
-  }, [selectedPlayer]);
+    if (!selectedDeck) return;
+    const request = new AbortController();
+    void runDiagnose(request.signal);
+    return () => request.abort();
+  }, [selectedDeck, selectedPlayer, targetLevel]);
 
-  useEffect(() => {
-    if (selectedDeckId && selectedPlayer) {
-      runDiagnose();
-    }
-  }, [selectedDeckId, selectedPlayer, targetLevel]);
+  const handlePlayerChange = (name: string) => {
+    setSelectedPlayer(name);
+    setPreferredDeckId('');
+    setDiagnosis(null);
+    setLoading(false);
+    setError('');
+  };
 
-  const runDiagnose = async () => {
-    if (!selectedDeckId || !selectedPlayer) return;
+  const runDiagnose = async (signal: AbortSignal) => {
+    if (!selectedDeck || !selectedPlayer) return;
     setLoading(true);
     setError('');
     try {
-      const result = await diagnoseDeck(selectedPlayer, selectedDeckId);
-      const deck = decks.find(d => d.id === selectedDeckId);
-      const cards = deck ? JSON.parse(deck.cards) : [];
+      const result = await diagnoseDeck(selectedPlayer, selectedDeck.id, signal);
+      if (signal.aborted) return;
+      const cards: string[] = JSON.parse(selectedDeck.cards);
       const details = cards.map((cardId: string) => {
         const card = ALL_CARDS_DATA.find(c => c.id === cardId);
         const rarity = card?.rarity || null;
@@ -174,9 +170,9 @@ const Diagnose: React.FC = () => {
         details,
       });
     } catch (err) {
-      setError('Ошибка диагностики');
+      if (!signal.aborted) setError('Ошибка диагностики');
     } finally {
-      setLoading(false);
+      if (!signal.aborted) setLoading(false);
     }
   };
 
@@ -221,7 +217,6 @@ const Diagnose: React.FC = () => {
   };
 
   const raritySummary = getRaritySummary();
-  const selectedDeck = decks.find(d => d.id === selectedDeckId);
 
   return (
     <motion.div
@@ -237,32 +232,15 @@ const Diagnose: React.FC = () => {
       <div className={`p-4 rounded-lg shadow mb-6 transition-colors duration-200 ${
         isDark ? 'bg-gray-800' : 'bg-white'
       }`}>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-              Аккаунт
-            </label>
-            <select
-              value={selectedPlayer}
-              onChange={(e) => setSelectedPlayer(e.target.value)}
-              className={`w-full rounded px-3 py-2 transition-colors duration-200 ${
-                isDark
-                  ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
-                  : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
-              } border focus:outline-none focus:ring-2 focus:ring-blue-500/50`}
-            >
-              {players.map(p => (
-                <option key={p.id} value={p.name}>{p.name}</option>
-              ))}
-            </select>
-          </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <ProfileSwitcher profiles={players} value={selectedPlayer} onChange={handlePlayerChange} />
           <div>
             <label className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
               Колода
             </label>
             <select
               value={selectedDeckId}
-              onChange={(e) => setSelectedDeckId(e.target.value)}
+              onChange={(e) => setPreferredDeckId(e.target.value)}
               className={`w-full rounded px-3 py-2 transition-colors duration-200 ${
                 isDark
                   ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
@@ -320,9 +298,9 @@ const Diagnose: React.FC = () => {
         </div>
       </div>
 
-      {error && (
+      {(error || savedDecksError) && (
         <div className={`mb-4 p-3 rounded-lg ${isDark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-600'}`}>
-          {error}
+          {error || savedDecksError}
         </div>
       )}
 

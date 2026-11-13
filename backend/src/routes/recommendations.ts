@@ -1,6 +1,7 @@
 import { Router } from 'express';
-import type { PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
 import { z } from 'zod';
+import { userId } from './auth';
 import { cardDataMap } from '../config/cards';
 import { findClanWarCombinations } from '../services/clanWarCombinations';
 import { calculatePlayerBonus, fixDeckTemplate } from '../services/deckService';
@@ -9,6 +10,31 @@ import { scoreFilteredDeck } from '../services/filteredRecommendations';
 const cardFilterError = 'Card filters must be arrays of card IDs';
 const cardFilter = z.array(z.string({ error: cardFilterError }), { error: cardFilterError }).default([]);
 const requiredDeckIdsError = 'Required decks must be an array of deck IDs';
+const deckTransfer = z.object({
+  fromPlayer: z.string().min(1),
+  toPlayer: z.string().min(1),
+  mode: z.enum(['copy', 'move']),
+}).refine(input => input.fromPlayer !== input.toPlayer);
+const duplicateSavedDeck = 'У выбранного аккаунта уже есть такая колода';
+
+function savedComposition(value: string): string | undefined {
+  try {
+    const cards: unknown = JSON.parse(value);
+    if (Array.isArray(cards) && cards.length === 8 && cards.every(card => typeof card === 'string')) {
+      return JSON.stringify(cards.sort());
+    }
+  } catch {
+    // Ignore malformed legacy decks when checking duplicates.
+  }
+}
+
+async function hasSavedComposition(tx: Prisma.TransactionClient, playerId: string, cards: string) {
+  const composition = savedComposition(cards);
+  if (!composition) return false;
+  const decks = await tx.savedDeck.findMany({ where: { playerId }, select: { cards: true } });
+  return decks.some(deck => savedComposition(deck.cards) === composition);
+}
+
 const recommendationRequest = z.object({
   playerName: z.string({ error: 'Player name is required' })
     .refine(name => name.trim().length > 0, 'Player name is required'),
@@ -40,7 +66,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
       const { playerName, limit: requestedLimit, includeCards, excludeCards } = parsed.data;
       const limit = normalizeLimit(requestedLimit, 10);
 
-      const player = await prisma.player.findUnique({ where: { name: playerName } });
+      const player = await prisma.player.findUnique({ where: { ownerId_name: { ownerId: userId(res), name: playerName } } });
       if (!player) return res.status(404).json({ error: 'Player not found' });
 
       const rawLevels = JSON.parse(player.levels);
@@ -153,7 +179,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
 
       console.log('📥 /recommend-cw запрос:', { playerName, limit, includeCards, excludeCards, requiredDeckIds });
 
-      const player = await prisma.player.findUnique({ where: { name: playerName } });
+      const player = await prisma.player.findUnique({ where: { ownerId_name: { ownerId: userId(res), name: playerName } } });
       if (!player) return res.status(404).json({ error: 'Player not found' });
 
       const rawLevels = JSON.parse(player.levels);
@@ -352,9 +378,9 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
   router.post('/diagnose', async (req, res) => {
     try {
       const { playerName, targetLevel = 13 } = req.body;
-      if (!playerName) return res.status(400).json({ error: 'Player name is required' });
+      if (typeof playerName !== 'string' || !playerName) return res.status(400).json({ error: 'Player name is required' });
 
-      const player = await prisma.player.findUnique({ where: { name: playerName } });
+      const player = await prisma.player.findUnique({ where: { ownerId_name: { ownerId: userId(res), name: playerName } } });
       if (!player) return res.status(404).json({ error: 'Player not found' });
 
       const levels = JSON.parse(player.levels);
@@ -396,9 +422,9 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
   router.get('/saved-decks', async (req, res) => {
     try {
       const { playerName } = req.query;
-      if (!playerName) return res.status(400).json({ error: 'Player name is required' });
+      if (typeof playerName !== 'string' || !playerName) return res.status(400).json({ error: 'Player name is required' });
 
-      const player = await prisma.player.findUnique({ where: { name: String(playerName) } });
+      const player = await prisma.player.findUnique({ where: { ownerId_name: { ownerId: userId(res), name: playerName } } });
       if (!player) return res.status(404).json({ error: 'Player not found' });
 
       const decks = await prisma.savedDeck.findMany({
@@ -415,25 +441,61 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
   // Сохранить колоду
   router.post('/saved-decks', async (req, res) => {
     try {
-      const { playerName, name, cards } = req.body;
-      if (!playerName || !name || !cards || !Array.isArray(cards) || cards.length !== 8) {
+      const { playerName, name, cards } = req.body ?? {};
+      if (typeof playerName !== 'string' || !playerName || typeof name !== 'string' || !name ||
+          !Array.isArray(cards) || cards.length !== 8 || !cards.every(card => typeof card === 'string')) {
         return res.status(400).json({ error: 'Invalid data' });
       }
 
-      const player = await prisma.player.findUnique({ where: { name: playerName } });
+      const player = await prisma.player.findUnique({ where: { ownerId_name: { ownerId: userId(res), name: playerName } } });
       if (!player) return res.status(404).json({ error: 'Player not found' });
 
-      const savedDeck = await prisma.savedDeck.create({
-        data: {
-          playerId: player.id,
-          name,
-          cards: JSON.stringify(cards),
-        },
+      const serializedCards = JSON.stringify(cards);
+      const savedDeck = await prisma.$transaction(async tx => {
+        if (await hasSavedComposition(tx, player.id, serializedCards)) return null;
+        return tx.savedDeck.create({ data: { playerId: player.id, name, cards: serializedCards } });
       });
+      if (!savedDeck) return res.status(409).json({ error: duplicateSavedDeck });
       res.json(savedDeck);
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: 'Failed to save deck' });
+    }
+  });
+
+  router.post('/saved-decks/:id/transfer', async (req, res) => {
+    const parsed = deckTransfer.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Выберите другой игровой аккаунт' });
+    const { fromPlayer, toPlayer, mode } = parsed.data;
+
+    try {
+      const ownerId = userId(res);
+      const result = await prisma.$transaction(async tx => {
+        const source = await tx.savedDeck.findFirst({
+          where: { id: req.params.id, player: { name: fromPlayer, ownerId } },
+        });
+        const destination = await tx.player.findUnique({
+          where: { ownerId_name: { name: toPlayer, ownerId } },
+          select: { id: true },
+        });
+        if (!source || !destination) return null;
+        if (await hasSavedComposition(tx, destination.id, source.cards)) return 'duplicate';
+        if (mode === 'move') {
+          return tx.savedDeck.update({
+            where: { id: source.id, playerId: source.playerId },
+            data: { playerId: destination.id },
+          });
+        }
+        return tx.savedDeck.create({
+          data: { playerId: destination.id, name: source.name, cards: source.cards },
+        });
+      });
+      if (!result) return res.status(404).json({ error: 'Колода или игровой аккаунт не найдены' });
+      if (result === 'duplicate') return res.status(409).json({ error: duplicateSavedDeck });
+      res.json(result);
+    } catch (error) {
+      console.error('Failed to transfer saved deck:', error);
+      res.status(500).json({ error: 'Не удалось сохранить колоду на другом аккаунте' });
     }
   });
 
@@ -445,7 +507,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
       if (typeof playerName !== 'string' || !playerName.trim()) {
         return res.status(400).json({ error: 'Player name is required' });
       }
-      const { count } = await prisma.savedDeck.deleteMany({ where: { id, player: { name: playerName } } });
+      const { count } = await prisma.savedDeck.deleteMany({ where: { id, player: { name: playerName, ownerId: userId(res) } } });
       if (count === 0) return res.status(404).json({ error: 'Saved deck not found' });
       res.json({ success: true });
     } catch (error) {
@@ -463,7 +525,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         return res.status(400).json({ error: 'Player name and deckId are required' });
       }
 
-      const player = await prisma.player.findUnique({ where: { name: playerName } });
+      const player = await prisma.player.findUnique({ where: { ownerId_name: { ownerId: userId(res), name: playerName } } });
       if (!player) return res.status(404).json({ error: 'Player not found' });
 
       const savedDeck = await prisma.savedDeck.findFirst({

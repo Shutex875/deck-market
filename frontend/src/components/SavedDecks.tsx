@@ -1,3 +1,4 @@
+import ProfileSwitcher from './ProfileSwitcher';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
@@ -135,26 +136,7 @@ const SavedDecks: React.FC = () => {
     }`}>
       <h2 className="text-2xl font-bold mb-4">Мои колоды</h2>
 
-      <div className={`p-4 rounded-lg shadow mb-6 transition-colors duration-200 ${
-        isDark ? 'bg-gray-800' : 'bg-white'
-      }`}>
-        <label className={`block font-medium mb-1 ${
-          isDark ? 'text-gray-300' : 'text-gray-700'
-        }`}>Аккаунт</label>
-        <select
-          value={selectedPlayer}
-          onChange={(e) => setSelectedPlayer(e.target.value)}
-          className={`w-full rounded px-3 py-2 max-w-xs transition-colors duration-200 ${
-            isDark
-              ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
-              : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
-          } border focus:outline-none`}
-        >
-          {players.map(p => (
-            <option key={p.id} value={p.name}>{p.name}</option>
-          ))}
-        </select>
-      </div>
+      <ProfileSwitcher profiles={players} value={selectedPlayer} className="mb-6 max-w-xs" onChange={setSelectedPlayer} />
 
       {error && <div className={`mb-4 p-3 rounded-lg ${
         isDark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-600'

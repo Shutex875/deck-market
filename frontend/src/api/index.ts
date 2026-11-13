@@ -1,11 +1,25 @@
-import axios from 'axios';
+import axios, { isAxiosError } from 'axios';
 import { createCachedRead } from './cachedRead';
+import { currentSessionRevision, notifySessionExpired, onSessionChanged, requestHeader } from './session';
 
 const API_BASE = '/api';
 
 const api = axios.create({
   baseURL: API_BASE,
-  headers: { 'Content-Type': 'application/json' },
+  headers: { 'Content-Type': 'application/json', ...requestHeader },
+});
+
+const requestRevisions = new WeakMap<object, number>();
+api.interceptors.request.use(config => {
+  requestRevisions.set(config, currentSessionRevision());
+  return config;
+}, undefined, { synchronous: true });
+api.interceptors.response.use(undefined, error => {
+  if (isAxiosError(error) && error.response?.headers['x-bastdecks-session'] === 'expired' && error.config) {
+    const revision = requestRevisions.get(error.config);
+    if (revision !== undefined) notifySessionExpired(revision);
+  }
+  return Promise.reject(error);
 });
 
 // === Типы ===
@@ -167,29 +181,33 @@ export const getSavedDecks = (playerName: string, signal?: AbortSignal) =>
 export const saveDeck = (playerName: string, name: string, cards: string[]) =>
   api.post<SavedDeck>('/saved-decks', { playerName, name, cards }).then(res => res.data);
 
+export const transferSavedDeck = (id: string, fromPlayer: string, toPlayer: string, mode: 'copy' | 'move') =>
+  api.post<SavedDeck>(`/saved-decks/${encodeURIComponent(id)}/transfer`, { fromPlayer, toPlayer, mode })
+    .then(res => res.data);
+
 export const deleteSavedDeck = (id: string, playerName: string) =>
   api.delete(`/saved-decks/${id}`, { params: { playerName } }).then(res => res.data);
 
-export const diagnoseDeck = (playerName: string, deckId: string) =>
+export const diagnoseDeck = (playerName: string, deckId: string, signal?: AbortSignal) =>
   api.post<{
     success: boolean;
     deckName: string;
     totalGold: number;
     targetLevel: number;
     details: { card: string; currentLevel: number; neededGold: number }[];
-  }>('/diagnose-deck', { playerName, deckId }).then(res => res.data);
+  }>('/diagnose-deck', { playerName, deckId }, { signal }).then(res => res.data);
 
 // === Player API ===
 const players = createCachedRead(() => api.get<Player[]>('/players').then(res => res.data));
+onSessionChanged(players.invalidate);
 export const getPlayers = players.read;
 export const getPlayer = (name: string, signal?: AbortSignal) =>
   api.get<Player>(`/players/${encodeURIComponent(name)}`, { signal }).then(res => res.data);
-export const savePlayer = (data: Omit<Player, 'id' | 'createdAt' | 'updatedAt'>) =>
-  api.post<Player>('/players', data).then(res => {
+export const savePlayer = (data: Omit<Player, 'id' | 'createdAt' | 'updatedAt'>, existingName?: string) =>
+  (existingName ? api.put(`/players/${encodeURIComponent(existingName)}`, data) : api.post<Player>('/players', data)).then(() => {
     players.invalidate();
-    return res.data;
   });
-export const deletePlayer = (name: string) => api.delete(`/players/${name}`).then(res => {
+export const deletePlayer = (name: string) => api.delete(`/players/${encodeURIComponent(name)}`).then(res => {
   players.invalidate();
   return res.data;
 });
@@ -213,12 +231,16 @@ export const createMetaDeck = (data: {
 export const deleteMetaDeck = (id: string) => api.delete(`/meta-decks/${id}`).then(res => res.data);
 export const importDecksFromDeckshop = (category: string = 'popular') =>
   api.post('/meta-decks/import-deckshop', { category }).then(res => res.data).finally(invalidateDeckLookups);
-export const importMockDecks = () =>
-  fetch(`${API_BASE}/meta-decks/import-mock`, {
+export async function importMockDecks() {
+  const revision = currentSessionRevision();
+  const response = await fetch(`${API_BASE}/meta-decks/import-mock`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...requestHeader },
     body: JSON.stringify({}),
   }).finally(invalidateDeckLookups);
+  if (response.headers.get('X-BastDecks-Session') === 'expired') notifySessionExpired(revision);
+  return response;
+}
 export interface RecognizedDeckCard {
   id: string;
   name: string;

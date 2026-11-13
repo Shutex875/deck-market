@@ -1,3 +1,4 @@
+import ProfileSwitcher from './ProfileSwitcher';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -19,7 +20,7 @@ import {
   PhotoIcon,
   ArrowUpTrayIcon,
 } from '@heroicons/react/24/outline';
-import { getMetaDecks, deleteMetaDeck, getCategories, Category, getPlayers, saveDeck, Player, checkDeckDuplicates, recognizeDeckScreenshot, RecognizedDeckCard, MetaDeckSortBy, SortOrder, importMockDecks, type MetaDeckFull } from '../api';
+import { getMetaDecks, deleteMetaDeck, getCategories, Category, getPlayers, saveDeck, transferSavedDeck, deleteSavedDeck, Player, checkDeckDuplicates, recognizeDeckScreenshot, RecognizedDeckCard, MetaDeckSortBy, SortOrder, importMockDecks, type MetaDeckFull } from '../api';
 import { CardIcon } from '../utils/cardImages';
 import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
@@ -46,12 +47,12 @@ const DeckList: React.FC = () => {
   const navigate = useNavigate();
   const screenshotInputRef = useRef<HTMLInputElement>(null);
 
-  const [decks, setDecks] = useState<MetaDeckFull[]>([]);
+  const [decks, setDecks] = useState<MetaDeckFull[] | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [filter, setFilter] = useState('all');
   const [sortBy, setSortBy] = useState<MetaDeckSortBy>('name');
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [importing, setImporting] = useState(false);
   const [importNotice, setImportNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [isScreenshotModalOpen, setIsScreenshotModalOpen] = useState(false);
@@ -81,11 +82,16 @@ const DeckList: React.FC = () => {
   // Состояния для сохранения в избранное
   const [players, setPlayers] = useState<Player[]>([]);
   const [selectedPlayerName, setSelectedPlayerName] = useState<string>('');
-  const { decks: savedDecks, loading: loadingSavedDecks, reload: reloadSavedDecks } = useSavedDecks(selectedPlayerName);
+  const saved = useSavedDecks(selectedPlayerName);
+  const savedDecks = saved.decks;
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
   const [savingDeck, setSavingDeck] = useState<CatalogDeck | null>(null);
-  const [saveLoading, setSaveLoading] = useState(false);
+  const [targetPlayer, setTargetPlayer] = useState('');
+  const [saveLoading, setSaveLoading] = useState<'copy' | 'move' | 'remove' | null>(null);
   const [saveError, setSaveError] = useState('');
+  const [saveNotice, setSaveNotice] = useState('');
+  const otherPlayerDecks = useSavedDecks(isSaveModalOpen && targetPlayer !== selectedPlayerName ? targetPlayer : '');
+  const targetDecks = targetPlayer === selectedPlayerName ? saved : otherPlayerDecks;
 
   const fetchDecks = async () => {
     setLoading(true);
@@ -283,7 +289,7 @@ const DeckList: React.FC = () => {
 
   const hasActiveCardFilter = includeCards.length > 0 || excludeCards.length > 0;
 
-  const catalog = useMemo(() => decks.map(deck => {
+  const catalog = useMemo(() => (decks ?? []).map(deck => {
     const cards = parseDeckCards(deck.cards);
     return { ...deck, cards, composition: deckComposition(cards) };
   }), [decks]);
@@ -291,36 +297,65 @@ const DeckList: React.FC = () => {
     () => new Set(savedDecks.map(deck => deckComposition(parseDeckCards(deck.cards)))),
     [savedDecks],
   );
+  const sourceDeck = savingDeck && savedDecks.find(deck =>
+    deckComposition(parseDeckCards(deck.cards)) === savingDeck.composition,
+  );
+  const targetSavedDeck = savingDeck && targetDecks.decks.find(deck =>
+    deckComposition(parseDeckCards(deck.cards)) === savingDeck.composition,
+  );
+  const canSave = Boolean(targetPlayer && !targetSavedDeck && !saved.loading && !targetDecks.loading &&
+    !saved.error && !targetDecks.error && !saveLoading);
 
   // Открыть модалку сохранения для выбранной колоды
   const openSaveModal = (deck: CatalogDeck) => {
     setSavingDeck(deck);
+    setTargetPlayer(selectedPlayerName);
     setSaveError('');
+    setSaveNotice('');
     setIsSaveModalOpen(true);
   };
 
   // Сохранить колоду
-  const handleSaveDeck = async () => {
-    if (!savingDeck || !selectedPlayerName || loadingSavedDecks) return;
-    setSaveLoading(true);
+  const handleSaveDeck = async (mode: 'copy' | 'move') => {
+    if (!savingDeck || !canSave || (mode === 'move' && !sourceDeck)) return;
+    setSaveLoading(mode);
     setSaveError('');
     try {
-      // Проверяем, не сохранена ли уже
-      if (savedCompositions.has(savingDeck.composition)) {
-        setSaveError('Эта колода уже сохранена для выбранного аккаунта');
-        setSaveLoading(false);
-        return;
+      if (sourceDeck) {
+        await transferSavedDeck(sourceDeck.id, selectedPlayerName, targetPlayer, mode);
+      } else {
+        await saveDeck(targetPlayer, savingDeck.name, savingDeck.cards);
       }
-      await saveDeck(selectedPlayerName, savingDeck.name, savingDeck.cards);
-      // Обновляем список сохранённых колод для выбранного игрока
-      reloadSavedDecks();
+      setSelectedPlayerName(targetPlayer);
+      saved.reload();
       setIsSaveModalOpen(false);
       setSavingDeck(null);
-      alert('Колода сохранена!');
+      setSaveNotice(mode === 'move' ? `Колода перенесена на «${targetPlayer}»` : `Колода сохранена на «${targetPlayer}»`);
     } catch (error) {
-      setSaveError('Ошибка сохранения колоды');
+      setSaveError(isAxiosError<{ error?: string }>(error)
+        ? error.response?.data.error || 'Не удалось сохранить колоду'
+        : 'Не удалось сохранить колоду');
     } finally {
-      setSaveLoading(false);
+      setSaveLoading(null);
+    }
+  };
+
+  const removeFromFavorites = async () => {
+    if (!targetSavedDeck || !targetPlayer || saveLoading) return;
+    setSaveLoading('remove');
+    setSaveError('');
+    try {
+      await deleteSavedDeck(targetSavedDeck.id, targetPlayer);
+      targetDecks.reload();
+      setIsSaveModalOpen(false);
+      setSavingDeck(null);
+      setSaveNotice(`Колода убрана из избранного «${targetPlayer}»`);
+    } catch (error) {
+      setSaveError(isAxiosError<{ error?: string }>(error)
+        ? error.response?.data.error || 'Не удалось убрать колоду из избранного'
+        : 'Не удалось убрать колоду из избранного');
+    } finally {
+      setSaveLoading(null);
     }
   };
 
@@ -345,18 +380,19 @@ const DeckList: React.FC = () => {
     return undefined;
   };
 
-  const getSlotBorderClass = (slotIndex: number, slot2Type?: 'evo' | 'hero' | null, cardId?: string) => {
-    if (slotIndex === 0) return 'border-purple-500 border-4';
-    if (slotIndex === 1) return 'border-yellow-500 border-4';
+  const getSlotClass = (cardId: string, slotIndex: number, slot2Type?: 'evo' | 'hero' | null) => {
+    const evolution = 'border-violet-500/60 bg-violet-500/10';
+    const hero = 'border-amber-500/60 bg-amber-500/10';
+    if (slotIndex === 0) return evolution;
+    if (slotIndex === 1) return hero;
     if (slotIndex === 2) {
-      if (slot2Type === 'evo') return 'border-purple-500 border-4';
-      if (slot2Type === 'hero') return 'border-yellow-500 border-4';
-      const card = cardId ? cardsById.get(cardId) : undefined;
-      if (card?.evoFile) return 'border-purple-500 border-4';
-      if (card?.heroFile || card?.champion) return 'border-yellow-500 border-4';
-      return 'border-gray-300 border-2 animate-borderGlow';
+      if (slot2Type === 'evo') return evolution;
+      if (slot2Type === 'hero') return hero;
+      const card = cardsById.get(cardId);
+      if (card?.evoFile) return evolution;
+      if (card?.heroFile || card?.champion) return hero;
     }
-    return 'border-gray-300 border-2';
+    return 'border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-900/40';
   };
 
   if (loading) {
@@ -370,7 +406,10 @@ const DeckList: React.FC = () => {
   return (
     <div className={`transition-colors duration-200 ${isDark ? 'text-gray-200' : 'text-gray-900'}`}>
       <div className="flex flex-wrap justify-between items-center mb-4 gap-2">
-        <h2 className="text-2xl font-bold">Мета-колоды</h2>
+        <div>
+          <h2 className="text-2xl font-bold">Мета-колоды</h2>
+          {decks && <p className="text-sm text-gray-600 dark:text-gray-400">Всего колод: {decks.length}</p>}
+        </div>
         <div className="flex flex-wrap gap-2">
           <Link
             to="/decks/new"
@@ -417,15 +456,17 @@ const DeckList: React.FC = () => {
           {importNotice.message}
         </div>
       )}
+      {saveNotice && <p role="status" className="mb-4 text-sm text-green-700 dark:text-green-400">{saveNotice}</p>}
 
       <div className={`mb-4 p-3 rounded-lg shadow flex flex-wrap items-center gap-3 transition-colors duration-200 ${
         isDark ? 'bg-gray-800' : 'bg-white'
       }`}>
         <FunnelIcon className={`w-4 h-4 ${isDark ? 'text-gray-400' : 'text-gray-500'}`} />
-        <label className={`font-medium ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+        <label htmlFor="deck-category" className={`font-medium ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
           Категория:
         </label>
         <select
+          id="deck-category"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
           className={`rounded px-3 py-1 transition-colors duration-200 ${
@@ -485,6 +526,11 @@ const DeckList: React.FC = () => {
             </span>
           )}
         </button>
+        {decks && (filter !== 'all' || hasActiveCardFilter) && (
+          <span role="status" className="ml-auto text-sm text-gray-600 dark:text-gray-400">
+            Показано {filteredDecks.length} из {decks.length}
+          </span>
+        )}
       </div>
 
       <AnimatePresence mode="wait">
@@ -496,47 +542,31 @@ const DeckList: React.FC = () => {
             exit={{ opacity: 0, y: -10 }}
             className={`text-center py-8 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}
           >
-            Нет колод, соответствующих фильтрам
+            {decks ? 'Нет колод, соответствующих фильтрам' : 'Не удалось загрузить мета-колоды'}
           </motion.div>
         ) : (
           <motion.div
             key="decks"
-            initial="hidden"
-            animate="visible"
-            exit="hidden"
-            variants={{
-              hidden: { opacity: 0 },
-              visible: {
-                opacity: 1,
-                transition: {
-                  staggerChildren: 0.05,
-                },
-              },
-            }}
-            className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            className="grid grid-cols-1 gap-3 min-[600px]:grid-cols-2"
           >
             {filteredDecks.map((deck, deckIndex) => {
               const { cards } = deck;
               const slot2TypeFromDeck = deck.slot2Type;
               const saved = cards.length === 8 && savedCompositions.has(deck.composition);
               return (
-                <motion.div
+                <article
                   key={deck.id}
-                  variants={{
-                    hidden: { opacity: 0, y: 20, scale: 0.95 },
-                    visible: { opacity: 1, y: 0, scale: 1 },
-                  }}
-                  whileHover={{ scale: 1.02, boxShadow: '0 10px 30px rgba(0,0,0,0.1)' }}
-                  transition={{ type: 'spring', stiffness: 300, damping: 20 }}
-                  className={`rounded-lg shadow p-4 border-l-4 border-blue-500 transition-colors duration-200 ${
-                    isDark ? 'bg-gray-800 hover:bg-gray-700' : 'bg-white hover:bg-gray-50'
-                  }`}
+                  className="flex min-w-0 flex-col rounded-xl border border-gray-200 bg-white p-3 shadow-sm dark:border-gray-700 dark:bg-gray-800 sm:p-4"
                 >
-                  <div className="flex justify-between items-start">
-                    <h3 className={`font-bold text-lg truncate ${isDark ? 'text-gray-200' : 'text-gray-800'}`}>
+                  <div className="flex items-start justify-between gap-2">
+                    <h3 className="min-w-0 break-words text-base font-semibold leading-snug text-gray-900 dark:text-gray-100">
                       {deck.name}
                     </h3>
-                    <div className="flex gap-1 items-center">
+                    <div className="flex shrink-0 items-center gap-1">
                       <button
                         onClick={() => openSaveModal(deck)}
                         disabled={cards.length !== 8}
@@ -545,8 +575,8 @@ const DeckList: React.FC = () => {
                             ? isDark ? 'text-yellow-400 hover:bg-gray-600' : 'text-yellow-500 hover:bg-yellow-50'
                             : isDark ? 'text-gray-400 hover:bg-gray-600' : 'text-gray-400 hover:bg-gray-100'
                         }`}
-                        aria-label={saved ? 'Уже сохранено' : 'Сохранить в избранное'}
-                        title={saved ? 'Уже сохранено для выбранного аккаунта' : 'Сохранить в избранное'}
+                        aria-label={saved ? 'Управлять сохранённой колодой' : 'Сохранить в избранное'}
+                        title={saved ? `Сохранено на «${selectedPlayerName}»` : 'Сохранить в избранное'}
                       >
                         <BookmarkIcon className={`w-5 h-5 ${saved ? 'fill-current' : ''}`} />
                       </button>
@@ -575,9 +605,7 @@ const DeckList: React.FC = () => {
                     </div>
                   </div>
 
-                  <div className={`text-sm mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 ${
-                    isDark ? 'text-gray-400' : 'text-gray-600'
-                  }`}>
+                  <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-gray-600 dark:text-gray-400">
                     <span className="flex items-center gap-1">
                       <TagIcon className="w-3 h-3" />
                       Категория: {deck.category?.name || '—'}
@@ -602,23 +630,21 @@ const DeckList: React.FC = () => {
                     )}
                   </div>
 
-                  <div className="grid grid-cols-4 gap-1 mt-2">
-                    {cards.map((card: string, idx: number) => {
-                      const customSrc = getCustomSrc(card, idx, slot2TypeFromDeck);
-                      const borderClass = getSlotBorderClass(idx, slot2TypeFromDeck, card);
-                      return (
-                        <div key={idx} className={`relative rounded bg-gray-50 dark:bg-gray-700 p-1 flex flex-col items-center ${borderClass}`}>
+                  <div className="mt-auto pt-3">
+                    <div className="mx-auto grid w-full max-w-[19rem] grid-cols-4 gap-1.5 lg:max-w-none lg:grid-cols-8">
+                      {cards.map((card, index) => (
+                        <div key={index} className={`aspect-[3/4] min-w-0 rounded-md border p-0.5 ${getSlotClass(card, index, slot2TypeFromDeck)}`}>
                           <CardIcon
                             cardId={card}
-                            className="w-10 h-10"
-                            customSrc={customSrc}
+                            className="block h-full w-full"
+                            customSrc={getCustomSrc(card, index, slot2TypeFromDeck)}
                             loading={deckIndex < 3 ? 'eager' : 'lazy'}
                           />
                         </div>
-                      );
-                    })}
+                      ))}
+                    </div>
                   </div>
-                </motion.div>
+                </article>
               );
             })}
           </motion.div>
@@ -826,7 +852,9 @@ const DeckList: React.FC = () => {
       </Dialog.Root>
 
       {/* Модалка сохранения колоды */}
-      <Dialog.Root open={isSaveModalOpen} onOpenChange={setIsSaveModalOpen}>
+      <Dialog.Root open={isSaveModalOpen} onOpenChange={open => {
+        if (!saveLoading) setIsSaveModalOpen(open);
+      }}>
         <AnimatePresence>
           {isSaveModalOpen && savingDeck && (
             <Dialog.Portal forceMount>
@@ -850,6 +878,7 @@ const DeckList: React.FC = () => {
                 >
                   <Dialog.Close asChild>
                     <button
+                      disabled={Boolean(saveLoading)}
                       className={`absolute top-2 right-2 p-1 rounded-full transition-colors ${
                         isDark ? 'hover:bg-gray-700 text-gray-400' : 'hover:bg-gray-100 text-gray-600'
                       }`}
@@ -859,55 +888,57 @@ const DeckList: React.FC = () => {
                     </button>
                   </Dialog.Close>
                   <Dialog.Title className="text-lg font-bold mb-4">
-                    Сохранить колоду в избранное
+                    {sourceDeck ? 'Сохранённая колода' : 'Сохранить колоду в избранное'}
                   </Dialog.Title>
-                  <div className="mb-4">
-                    <p className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
+                  <div className="mb-4 space-y-3">
+                    <Dialog.Description className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
                       Колода: <strong>{savingDeck.name}</strong>
-                    </p>
-                    <p className={`text-sm ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                      Выберите аккаунт для сохранения:
-                    </p>
-                    <select
-                      value={selectedPlayerName}
-                      onChange={(e) => {
-                        setSelectedPlayerName(e.target.value);
+                      {sourceDeck && <>. Сохранена на «{selectedPlayerName}».</>}
+                    </Dialog.Description>
+                    <fieldset disabled={Boolean(saveLoading)}>
+                      <ProfileSwitcher profiles={players} value={targetPlayer} onChange={name => {
+                        setTargetPlayer(name);
                         setSaveError('');
-                      }}
-                      className={`w-full mt-2 rounded px-3 py-2 transition-colors duration-200 ${
-                        isDark
-                          ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
-                          : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
-                      } border focus:outline-none`}
-                    >
-                      {players.map(p => (
-                        <option key={p.id} value={p.name}>{p.name}</option>
-                      ))}
-                    </select>
+                      }} />
+                    </fieldset>
+                    {targetDecks.loading && <p role="status" className="text-sm">Проверяем избранное…</p>}
+                    {targetSavedDeck && <p role="status" className="text-sm">На «{targetPlayer}» уже есть эта колода.</p>}
+                    {sourceDeck && canSave && <p className="text-sm">Копия останется на обоих аккаунтах. При переносе колода исчезнет из избранного «{selectedPlayerName}».</p>}
                   </div>
-                  {saveError && (
-                    <div className={`mb-3 p-2 rounded text-sm ${isDark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-600'}`}>
-                      {saveError}
+                  {(saveError || saved.error || targetDecks.error) && (
+                    <div role="alert" className={`mb-3 p-2 rounded text-sm ${isDark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-600'}`}>
+                      {saveError || saved.error || targetDecks.error}
                     </div>
                   )}
-                  <div className="flex gap-3 justify-end">
+                  <div className="flex flex-wrap gap-2 justify-end">
                     <button
                       onClick={() => setIsSaveModalOpen(false)}
+                      disabled={Boolean(saveLoading)}
                       className={`px-4 py-2 rounded transition-colors ${
                         isDark ? 'bg-gray-600 hover:bg-gray-500 text-gray-200' : 'bg-gray-300 hover:bg-gray-400 text-gray-700'
                       }`}
                     >
                       Отмена
                     </button>
-                    <button
-                      onClick={handleSaveDeck}
-                      disabled={saveLoading || loadingSavedDecks || !selectedPlayerName}
-                      className={`px-4 py-2 rounded transition-all ${
-                        saveLoading ? 'opacity-50 cursor-not-allowed' : 'hover:shadow-lg transform hover:scale-105'
-                      } ${isDark ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-600 hover:bg-blue-700'} text-white`}
-                    >
-                      {saveLoading ? 'Сохранение...' : 'Сохранить'}
-                    </button>
+                    {targetSavedDeck && (
+                      <button type="button" onClick={() => void removeFromFavorites()} disabled={Boolean(saveLoading)}
+                        className="inline-flex items-center gap-2 rounded border border-red-500 px-3 py-2 text-red-700 hover:bg-red-50 disabled:opacity-50 dark:text-red-300 dark:hover:bg-red-950/30">
+                        <TrashIcon className="h-4 w-4" aria-hidden="true" />
+                        {saveLoading === 'remove' ? 'Удаление…' : 'Убрать из избранного'}
+                      </button>
+                    )}
+                    {!targetSavedDeck && sourceDeck && players.length > 1 && (
+                      <button type="button" onClick={() => void handleSaveDeck('move')} disabled={!canSave}
+                        className="rounded border border-blue-600 px-3 py-2 text-blue-700 hover:bg-blue-50 disabled:opacity-50 dark:text-blue-300 dark:hover:bg-gray-700">
+                        {saveLoading === 'move' ? 'Перенос…' : 'Перенести'}
+                      </button>
+                    )}
+                    {!targetSavedDeck && (!sourceDeck || players.length > 1) && (
+                      <button type="button" onClick={() => void handleSaveDeck('copy')} disabled={!canSave}
+                        className="rounded bg-blue-600 px-3 py-2 text-white hover:bg-blue-700 disabled:opacity-50">
+                        {saveLoading === 'copy' ? 'Сохранение…' : sourceDeck ? 'Сохранить копию' : 'Сохранить'}
+                      </button>
+                    )}
                   </div>
                 </motion.div>
               </Dialog.Content>

@@ -1,3 +1,4 @@
+import ProfileSwitcher from './ProfileSwitcher';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getPlayers, type Player } from '../api';
@@ -78,13 +79,13 @@ export default function Home({ theme }: { theme: string }) {
 
   // ---------- Функции работы с сохранением ----------
   const getPlayerStorageId = (playerName: string) =>
-    players.find(player => player.name === playerName)?.id || encodeURIComponent(playerName);
+    players.find(player => player.name === playerName)?.id || '';
   const getRecordKey = (playerName: string) => `rps_record_${getPlayerStorageId(playerName)}`;
   const getProgressKey = (playerName: string) => `rps_score_${getPlayerStorageId(playerName)}`;
 
   const loadRecord = (playerName: string): number => {
     const key = getRecordKey(playerName);
-    const saved = localStorage.getItem(key) ?? localStorage.getItem(`game_record_${playerName}`);
+    const saved = localStorage.getItem(key);
     if (saved) {
       try {
         const value = parseInt(saved, 10) || 0;
@@ -104,7 +105,7 @@ export default function Home({ theme }: { theme: string }) {
 
   const loadProgress = (playerName: string) => {
     const key = getProgressKey(playerName);
-    const saved = localStorage.getItem(key) ?? localStorage.getItem(`game_progress_${playerName}`);
+    const saved = localStorage.getItem(key);
     playerScoreRef.current = 0;
     computerScoreRef.current = 0;
     setPlayerScore(0);
@@ -407,25 +408,13 @@ export default function Home({ theme }: { theme: string }) {
             </div>
           )}
 
-          <div className="mb-4">
-            <label className={`block text-sm font-medium ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-              Выберите аккаунт
-            </label>
-            <select
-              value={selectedPlayer}
-              onChange={(e) => setSelectedPlayer(e.target.value)}
-              className={`mt-1 w-full rounded px-3 py-2 ${isDark ? 'bg-gray-700 border-gray-600 text-gray-200' : 'bg-white border-gray-300 text-gray-900'} border`}
-            >
-              {players.map((p) => (
-                <option key={p.id} value={p.name}>{p.name}</option>
-              ))}
-            </select>
-          </div>
+          <ProfileSwitcher profiles={players} value={selectedPlayer} className="mb-4" onChange={setSelectedPlayer} />
 
           <div className="flex flex-wrap gap-3 justify-center">
             <button
               onClick={startNewGame}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              disabled={!selectedPlayer}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
             >
               🆕
             </button>

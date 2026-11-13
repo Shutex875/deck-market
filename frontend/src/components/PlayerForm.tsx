@@ -215,10 +215,12 @@ const PlayerForm: React.FC = () => {
         levels: JSON.stringify(numericLevels),
         evolutions: JSON.stringify(evolutions),
         heroes: JSON.stringify(heroes),
-      });
+      }, name);
       navigate('/players');
-    } catch {
-      setError('Ошибка при сохранении аккаунта');
+    } catch (error) {
+      setError(isAxiosError<{ error?: string }>(error)
+        ? error.response?.data.error || 'Ошибка при сохранении аккаунта'
+        : 'Ошибка при сохранении аккаунта');
       setLoading(false);
     }
   };
@@ -479,12 +481,14 @@ const PlayerForm: React.FC = () => {
         isDark ? 'bg-gray-800' : 'bg-white'
       }`}>
         <div className="mb-4">
-          <label className={`block font-medium mb-1 ${
+          <label htmlFor="player-name" className={`block font-medium mb-1 ${
             isDark ? 'text-gray-300' : 'text-gray-700'
           }`}>Имя аккаунта</label>
           <input
+            id="player-name"
             type="text"
             value={playerName}
+            maxLength={80}
             onChange={(e) => setPlayerName(e.target.value)}
             className={`w-full rounded px-3 py-2 transition-colors duration-200 ${
               isDark

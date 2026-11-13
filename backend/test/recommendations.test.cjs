@@ -12,6 +12,7 @@ function request(path, body, prisma, createRouter = createRecommendationsRouter,
   const route = router.stack.find(layer => layer.route?.path === path).route;
   const response = { statusCode: 200 };
   const res = {
+    locals: { user: { id: 'user-a' } },
     status(code) {
       response.statusCode = code;
       return this;
@@ -42,9 +43,57 @@ test('saved deck deletion requires a matching account', async () => {
   assert.equal((await remove('Account B')).statusCode, 404);
   assert.deepEqual(await remove('Account A'), { statusCode: 200, body: { success: true } });
   assert.deepEqual(deletes, [
-    { id: 'deck-a', player: { name: 'Account B' } },
-    { id: 'deck-a', player: { name: 'Account A' } },
+    { id: 'deck-a', player: { name: 'Account B', ownerId: 'user-a' } },
+    { id: 'deck-a', player: { name: 'Account A', ownerId: 'user-a' } },
   ]);
+});
+
+test('saved deck transfer copies or moves only between owned profiles and rejects duplicate compositions', async () => {
+  const cards = ['Knight', 'Archers', 'Skeleton', 'Ice Spirit', 'Fireball', 'Cannon', 'Hog Rider', 'Valkyrie'];
+  const source = { id: 'saved-a', playerId: 'profile-a', name: 'Favorite', cards: JSON.stringify(cards) };
+  const rows = [source];
+  const prisma = {
+    $transaction: callback => callback({
+      player: {
+        async findUnique({ where }) {
+          assert.equal(where.ownerId_name.ownerId, 'user-a');
+          return { B: { id: 'profile-b' }, C: { id: 'profile-c' } }[where.ownerId_name.name] ?? null;
+        },
+      },
+      savedDeck: {
+        async findFirst({ where }) {
+          assert.deepEqual(where.player, { name: 'A', ownerId: 'user-a' });
+          return rows.find(row => row.id === where.id && row.playerId === 'profile-a') ?? null;
+        },
+        async findMany({ where }) {
+          return rows.filter(row => row.playerId === where.playerId);
+        },
+        async create({ data }) {
+          const row = { ...data, id: 'copy-id' };
+          rows.push(row);
+          return row;
+        },
+        async update({ where, data }) {
+          const row = rows.find(row => row.id === where.id && row.playerId === where.playerId);
+          return Object.assign(row, data);
+        },
+      },
+    }),
+  };
+  const transfer = (toPlayer, mode) => request('/saved-decks/:id/transfer', {
+    fromPlayer: 'A', toPlayer, mode,
+  }, prisma, createRecommendationsRouter, { params: { id: source.id } });
+
+  assert.equal((await transfer('A', 'copy')).statusCode, 400);
+  assert.equal((await transfer('Another user', 'move')).statusCode, 404);
+  assert.equal((await transfer('B', 'copy')).body.id, 'copy-id');
+  assert.equal(source.playerId, 'profile-a');
+  rows[1].cards = JSON.stringify([...cards].reverse());
+  assert.equal((await transfer('B', 'move')).statusCode, 409);
+  assert.equal(source.playerId, 'profile-a');
+  assert.equal((await transfer('C', 'move')).body.id, source.id);
+  assert.equal(source.playerId, 'profile-c');
+  assert.equal(rows.length, 2);
 });
 
 test('recommendation routes reject malformed input before querying Prisma', async () => {
@@ -104,7 +153,7 @@ test('Clan War accepts card filters and required deck IDs with the exact account
   }, {
     player: {
       findUnique: async ({ where }) => {
-        assert.equal(where.name, ' Player ');
+        assert.deepEqual(where.ownerId_name, { name: ' Player ', ownerId: 'user-a' });
         return null;
       },
     },
@@ -230,14 +279,19 @@ test('Deckshop imports only new names and writes through one transaction per req
   assert.equal(stored.get('New').avgElixir, 2.9);
 });
 
-test('game progress upsert creates the row through its player name', async () => {
+test('game progress upsert creates the row through the owned player ID', async () => {
   const body = { playerName: 'Player', playerScore: 2, computerScore: 1, record: 4 };
   const result = await request('/game-progress', body, {
-    player: { findUnique: async () => ({ name: 'Player' }) },
+    player: {
+      findUnique: async ({ where }) => {
+        assert.deepEqual(where.ownerId_name, { name: 'Player', ownerId: 'user-a' });
+        return { id: 'profile-a' };
+      },
+    },
     gameProgress: {
       async upsert({ where, create, update }) {
-        assert.deepEqual(where, { playerName: 'Player' });
-        assert.deepEqual(create, body);
+        assert.deepEqual(where, { playerId: 'profile-a' });
+        assert.deepEqual(create, { playerId: 'profile-a', playerScore: 2, computerScore: 1, record: 4 });
         assert.deepEqual(update, { playerScore: 2, computerScore: 1, record: 4 });
         return create;
       },
