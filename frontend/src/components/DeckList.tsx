@@ -50,6 +50,10 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
   const [decks, setDecks] = useState<MetaDeckFull[] | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [filter, setFilter] = useState('all');
+  const [search, setSearch] = useState('');
+  const [sourceFilter, setSourceFilter] = useState('');
+  const [tierFilter, setTierFilter] = useState('');
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [sortBy, setSortBy] = useState<MetaDeckSortBy>('name');
   const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
   const [loading, setLoading] = useState(true);
@@ -359,12 +363,31 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
     }
   };
 
-  // Фильтрация
+  const { sources, tiers } = useMemo(() => {
+    const names = new Map<string, string>();
+    const tiers = new Set<string>();
+    for (const deck of catalog) {
+      if (deck.source) names.set(deck.source.id, deck.source.name);
+      if (deck.tier) tiers.add(deck.tier);
+    }
+    return {
+      sources: [...names].sort((a, b) => a[1].localeCompare(b[1])),
+      tiers: [...tiers].sort((a, b) => a.localeCompare(b)),
+    };
+  }, [catalog]);
+  const nameQuery = search.trim().toLocaleLowerCase();
+  const hasFilters = Boolean(nameQuery || filter !== 'all' || sourceFilter || tierFilter || favoritesOnly || hasActiveCardFilter);
+  const checkingFavorites = favoritesOnly && saved.loading;
   const filteredDecks = useMemo(() => catalog.filter(deck =>
+    deck.name.toLocaleLowerCase().includes(nameQuery) &&
     (filter === 'all' || deck.categoryId === filter) &&
+    (!sourceFilter || deck.sourceId === sourceFilter) &&
+    (!tierFilter || (tierFilter === 'untiered' ? !deck.tier : `tier:${deck.tier}` === tierFilter)) &&
+    (!favoritesOnly || (deck.cards.length === 8 && savedCompositions.has(deck.composition))) &&
     includeCards.every(cardId => deck.cards.includes(cardId)) &&
     !excludeCards.some(cardId => deck.cards.includes(cardId))
-  ), [catalog, filter, includeCards, excludeCards]);
+  ), [catalog, nameQuery, filter, sourceFilter, tierFilter, favoritesOnly, savedCompositions, includeCards, excludeCards]);
+  const filterControlClass = 'rounded border border-gray-300 bg-white px-3 py-1.5 text-sm dark:border-gray-600 dark:bg-gray-700';
 
   const getCustomSrc = (cardId: string, slotIndex: number, slot2Type?: 'evo' | 'hero' | null) => {
     const card = cardsById.get(cardId);
@@ -409,7 +432,15 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
         <div>
           <h2 className="text-2xl font-bold">Мета-колоды</h2>
           {decks && <p className="text-sm text-gray-600 dark:text-gray-400">Всего колод: {decks.length}</p>}
+          <div className="mt-2">
+            {players.length === 1 ? (
+              <p className="text-sm">Игровой аккаунт: <strong>{selectedPlayerName}</strong></p>
+            ) : (
+              <ProfileSwitcher profiles={players} value={selectedPlayerName} onChange={setSelectedPlayerName} />
+            )}
+          </div>
         </div>
+        {canManageCatalog && (
         <div className="flex flex-wrap gap-2">
           <Link
             to="/decks/new"
@@ -440,9 +471,9 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
           >
             <ArrowPathIcon className={`w-4 h-4 ${importing ? 'animate-spin' : ''}`} />
             {importing ? 'Импорт...' : 'Импортировать Мета-колоды'}
-        {canManageCatalog && (
           </button>
         </div>
+        )}
       </div>
 
       {importNotice && (
@@ -462,7 +493,25 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
       <div className={`mb-4 p-3 rounded-lg shadow flex flex-wrap items-center gap-3 transition-colors duration-200 ${
         isDark ? 'bg-gray-800' : 'bg-white'
       }`}>
-        <FunnelIcon className={`w-4 h-4 ${isDark ? 'text-gray-400' : 'text-gray-500'}`} />
+        <input type="search" aria-label="Поиск колод по названию" placeholder="Поиск по названию…"
+          value={search} onChange={event => setSearch(event.target.value)}
+          className={`${filterControlClass} min-w-0 w-full sm:w-52`} />
+        <select aria-label="Источник" value={sourceFilter} onChange={event => setSourceFilter(event.target.value)}
+          className={filterControlClass}>
+          <option value="">Все источники</option>
+          {sources.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+        </select>
+        <select aria-label="Тир" value={tierFilter} onChange={event => setTierFilter(event.target.value)}
+          className={filterControlClass}>
+          <option value="">Все тиры</option>
+          {tiers.map(tier => <option key={tier} value={`tier:${tier}`}>{tier}</option>)}
+          <option value="untiered">Без тира</option>
+        </select>
+        <label className="inline-flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={favoritesOnly} disabled={!selectedPlayerName}
+            onChange={event => setFavoritesOnly(event.target.checked)} />
+          Только избранное
+        </label>
         <label htmlFor="deck-category" className={`font-medium ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
           Категория:
         </label>
@@ -473,7 +522,6 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
           className={`rounded px-3 py-1 transition-colors duration-200 ${
             isDark
               ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
-        )}
               : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
           } border focus:outline-none focus:ring-2 focus:ring-blue-500/50`}
         >
@@ -528,7 +576,7 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
             </span>
           )}
         </button>
-        {decks && (filter !== 'all' || hasActiveCardFilter) && (
+        {decks && hasFilters && !checkingFavorites && !(favoritesOnly && saved.error) && (
           <span role="status" className="ml-auto text-sm text-gray-600 dark:text-gray-400">
             Показано {filteredDecks.length} из {decks.length}
           </span>
@@ -536,7 +584,11 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
       </div>
 
       <AnimatePresence mode="wait">
-        {filteredDecks.length === 0 ? (
+        {checkingFavorites || (favoritesOnly && saved.error) ? (
+          <p key="favorites-status" role={saved.error ? 'alert' : 'status'} className="py-8 text-center">
+            {saved.error || 'Загрузка избранного…'}
+          </p>
+        ) : filteredDecks.length === 0 ? (
           <motion.div
             key="empty"
             initial={{ opacity: 0, y: 10 }}
@@ -582,6 +634,7 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
                       >
                         <BookmarkIcon className={`w-5 h-5 ${saved ? 'fill-current' : ''}`} />
                       </button>
+                      {canManageCatalog && <>
                       <Link
                         to={`/decks/edit/${deck.id}`}
                         className={`p-1 rounded transition-colors ${
@@ -604,6 +657,7 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
                       >
                         <TrashIcon className="w-4 h-4" />
                       </button>
+                      </>}
                     </div>
                   </div>
 
@@ -634,7 +688,6 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
 
                   <div className="mt-auto pt-3">
                     <div className="mx-auto grid w-full max-w-[19rem] grid-cols-4 gap-1.5 lg:max-w-none lg:grid-cols-8">
-                      {canManageCatalog && <>
                       {cards.map((card, index) => (
                         <div key={index} className={`aspect-[3/4] min-w-0 rounded-md border p-0.5 ${getSlotClass(card, index, slot2TypeFromDeck)}`}>
                           <CardIcon
@@ -657,7 +710,6 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
       {/* Модалка фильтра по картам */}
       <DeckFilterModal
         isOpen={isFilterModalOpen}
-                      </>}
         onClose={() => setIsFilterModalOpen(false)}
         onApply={handleApplyFilter}
         onClear={handleClearFilter}
