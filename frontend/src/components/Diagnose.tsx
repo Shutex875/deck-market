@@ -1,6 +1,6 @@
-import ProfileSwitcher from './ProfileSwitcher';
+import { useActivePlayer } from '../context/ActivePlayer';
 import React, { useState, useEffect } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   UserIcon,
@@ -12,59 +12,10 @@ import {
   SparklesIcon,
   InformationCircleIcon,
 } from '@heroicons/react/24/outline';
-import { getPlayers, Player, diagnoseDeck } from '../api';
+import { diagnoseDeck, type UpgradeDetail } from '../api';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import { CardIcon } from '../utils/cardImages';
-import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
-
-// ... оставляем все константы UPGRADE_CARDS, GOLD_COSTS, RARITY_KEYS и функции без изменений
-const UPGRADE_CARDS: Record<string, Record<number, number>> = {
-  Common: {
-    1: 2, 2: 4, 3: 10, 4: 20, 5: 50, 6: 100, 7: 200, 8: 400, 9: 800, 10: 1000, 11: 1500, 12: 2500, 13: 3500, 14: 5500, 15: 7500
-  },
-  Rare: {
-    3: 2, 4: 4, 5: 10, 6: 20, 7: 50, 8: 100, 9: 200, 10: 300, 11: 400, 12: 550, 13: 750, 14: 1000, 15: 1400
-  },
-  Epic: {
-    6: 2, 7: 4, 8: 10, 9: 20, 10: 30, 11: 50, 12: 70, 13: 100, 14: 130, 15: 180
-  },
-  Legendary: {
-    9: 2, 10: 4, 11: 6, 12: 9, 13: 12, 14: 14, 15: 20
-  },
-  Champion: {
-    11: 2, 12: 5, 13: 8, 14: 11, 15: 15
-  }
-};
-
-const GOLD_COSTS: Record<number, number> = {
-  1: 5, 2: 20, 3: 50, 4: 150, 5: 400, 6: 1000, 7: 2000, 8: 4000, 9: 8000,
-  10: 15000, 11: 25000, 12: 40000, 13: 60000, 14: 90000, 15: 120000
-};
-
-const getCardRarity = (cardId: string): string | null => {
-  const card = ALL_CARDS_DATA.find(c => c.id === cardId);
-  return card?.rarity || null;
-};
-
-const getNeededCards = (rarity: string | null, currentLevel: number, targetLevel: number): number => {
-  if (!rarity) return 0;
-  const rarityMap = UPGRADE_CARDS[rarity];
-  if (!rarityMap) return 0;
-  let total = 0;
-  for (let lv = currentLevel; lv < targetLevel; lv++) {
-    total += rarityMap[lv] || 0;
-  }
-  return total;
-};
-
-const getGoldNeeded = (currentLevel: number, targetLevel: number): number => {
-  let total = 0;
-  for (let lv = currentLevel; lv < targetLevel; lv++) {
-    total += GOLD_COSTS[lv] || 0;
-  }
-  return total;
-};
 
 const formatNumber = (num: number): string => {
   if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
@@ -78,13 +29,12 @@ const Diagnose: React.FC = () => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const deckIdParam = searchParams.get('deckId');
-  const playerParam = searchParams.get('player');
 
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [selectedPlayer, setSelectedPlayer] = useState('');
-  const { decks, error: savedDecksError } = useSavedDecks(selectedPlayer);
+  const { activePlayer, players } = useActivePlayer();
+  const selectedPlayer = activePlayer?.name ?? '';
+  const { decks, loading: savedDecksLoading, error: savedDecksError } = useSavedDecks(selectedPlayer);
   const [preferredDeckId, setPreferredDeckId] = useState(deckIdParam || '');
   const selectedDeck = decks.find(deck => deck.id === preferredDeckId) ?? decks[0];
   const selectedDeckId = selectedDeck?.id ?? '';
@@ -92,10 +42,9 @@ const Diagnose: React.FC = () => {
     deckName: string;
     totalGold: number;
     targetLevel: number;
-    details: { card: string; currentLevel: number; neededGold: number; neededCards: number; cardsHave: number }[];
+    details: (UpgradeDetail & { cardsHave: number })[];
   }>(null);
   const [targetLevel, setTargetLevel] = useState(16);
-  const [minLevel, setMinLevel] = useState(1);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showDetails, setShowDetails] = useState(false);
@@ -107,18 +56,6 @@ const Diagnose: React.FC = () => {
     Champion: 0,
   });
 
-  useEffect(() => {
-    const fetchPlayers = async () => {
-      try {
-        const data = await getPlayers();
-        setPlayers(data);
-        setSelectedPlayer((data.find(player => player.name === playerParam) ?? data[0])?.name ?? '');
-      } catch (err) {
-        console.error(err);
-      }
-    };
-    fetchPlayers();
-  }, []);
 
   useEffect(() => {
     if (!selectedDeck) return;
@@ -127,48 +64,21 @@ const Diagnose: React.FC = () => {
     return () => request.abort();
   }, [selectedDeck, selectedPlayer, targetLevel]);
 
-  const handlePlayerChange = (name: string) => {
-    setSelectedPlayer(name);
-    setPreferredDeckId('');
-    setDiagnosis(null);
-    setLoading(false);
-    setError('');
-  };
 
   const runDiagnose = async (signal: AbortSignal) => {
     if (!selectedDeck || !selectedPlayer) return;
     setLoading(true);
     setError('');
     try {
-      const result = await diagnoseDeck(selectedPlayer, selectedDeck.id, signal);
+      const result = await diagnoseDeck(selectedPlayer, selectedDeck.id, signal, targetLevel);
       if (signal.aborted) return;
-      const cards: string[] = JSON.parse(selectedDeck.cards);
-      const details = cards.map((cardId: string) => {
-        const card = ALL_CARDS_DATA.find(c => c.id === cardId);
-        const rarity = card?.rarity || null;
-        const currentLevel = result.details.find(d => d.card === cardId)?.currentLevel || 1;
-        const neededGold = getGoldNeeded(currentLevel, targetLevel);
-        const neededCards = getNeededCards(rarity, currentLevel, targetLevel);
-        return {
-          card: cardId,
-          currentLevel,
-          neededGold,
-          neededCards,
-          cardsHave: 0,
-        };
-      });
-      const totalGold = details.reduce((sum, d) => sum + d.neededGold, 0);
-      const minLevelInDeck = Math.min(...details.map(d => d.currentLevel));
-      setMinLevel(minLevelInDeck);
-      if (targetLevel < minLevelInDeck) {
-        setTargetLevel(minLevelInDeck);
-      }
-      setDiagnosis({
-        deckName: result.deckName,
-        totalGold,
-        targetLevel,
-        details,
-      });
+      setDiagnosis(previous => ({
+        ...result,
+        details: result.details.map(item => ({
+          ...item,
+          cardsHave: previous?.details.find(detail => detail.card === item.card)?.cardsHave ?? 0,
+        })),
+      }));
     } catch (err) {
       if (!signal.aborted) setError('Ошибка диагностики');
     } finally {
@@ -178,7 +88,7 @@ const Diagnose: React.FC = () => {
 
   const handleCardsHaveChange = (index: number, value: string) => {
     if (!diagnosis) return;
-    const num = parseInt(value) || 0;
+    const num = Math.max(0, parseInt(value) || 0);
     const newDetails = [...diagnosis.details];
     newDetails[index].cardsHave = num;
     setDiagnosis({ ...diagnosis, details: newDetails });
@@ -190,7 +100,7 @@ const Diagnose: React.FC = () => {
   };
 
   const handleWildcardChange = (rarity: string, value: string) => {
-    const num = parseInt(value) || 0;
+    const num = Math.max(0, parseInt(value) || 0);
     setWildcards(prev => ({ ...prev, [rarity]: num }));
   };
 
@@ -200,7 +110,8 @@ const Diagnose: React.FC = () => {
     const have: Record<string, number> = {};
     RARITY_KEYS.forEach(r => { needed[r] = 0; have[r] = 0; });
     diagnosis.details.forEach(item => {
-      const rarity = getCardRarity(item.card) || 'Common';
+      const { rarity } = item;
+      if (!rarity) return;
       const remaining = Math.max(0, item.neededCards - item.cardsHave);
       needed[rarity] += remaining;
       have[rarity] += item.cardsHave;
@@ -217,6 +128,10 @@ const Diagnose: React.FC = () => {
   };
 
   const raritySummary = getRaritySummary();
+  const unopenedCards = diagnosis?.details.filter(item => item.currentLevel === 0).map(item => item.card) ?? [];
+  const upgradeOrder = diagnosis?.details.flatMap(item =>
+    (item.steps ?? []).map(step => ({ ...step, card: item.card })),
+  ).sort((a, b) => a.level - b.level || a.gold - b.gold || a.card.localeCompare(b.card));
 
   return (
     <motion.div
@@ -227,26 +142,38 @@ const Diagnose: React.FC = () => {
         isDark ? 'text-gray-200' : 'text-gray-900'
       }`}
     >
-      <h2 className="text-2xl font-bold mb-4">Диагностика колоды</h2>
-
       <div className={`p-4 rounded-lg shadow mb-6 transition-colors duration-200 ${
         isDark ? 'bg-gray-800' : 'bg-white'
       }`}>
         <div className="grid gap-4 sm:grid-cols-2">
-          <ProfileSwitcher profiles={players} value={selectedPlayer} onChange={handlePlayerChange} />
+          <label className="flex flex-col gap-1 font-medium">
+            Игровой профиль
+            <select className="rounded border p-2 dark:border-gray-600 dark:bg-gray-700"
+              value={selectedPlayer} disabled={!players.length}
+              onChange={event => setSearchParams({ player: event.target.value })}>
+              {!players.length && <option value="">Нет профилей</option>}
+              {players.map(player => <option key={player.id} value={player.name}>{player.name}</option>)}
+            </select>
+          </label>
           <div>
             <label className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
               Колода
             </label>
             <select
+              aria-label="Колода"
+              disabled={!decks.length}
               value={selectedDeckId}
-              onChange={(e) => setPreferredDeckId(e.target.value)}
+              onChange={(e) => {
+                setDiagnosis(null);
+                setPreferredDeckId(e.target.value);
+              }}
               className={`w-full rounded px-3 py-2 transition-colors duration-200 ${
                 isDark
                   ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
                   : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
               } border focus:outline-none focus:ring-2 focus:ring-blue-500/50`}
             >
+              {!decks.length && <option value="">{savedDecksLoading ? 'Загрузка…' : 'Нет сохранённых колод'}</option>}
               {decks.map(d => (
                 <option key={d.id} value={d.id}>{d.name}</option>
               ))}
@@ -257,9 +184,10 @@ const Diagnose: React.FC = () => {
         <div className="mt-4 flex flex-wrap gap-4 items-end">
           <div>
             <label className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-              Целевой уровень (от {minLevel} до 16)
+              Целевой уровень (от 1 до 16)
             </label>
             <select
+              aria-label="Целевой уровень"
               value={targetLevel}
               onChange={handleTargetLevelChange}
               className={`w-32 rounded px-3 py-2 transition-colors duration-200 ${
@@ -268,7 +196,7 @@ const Diagnose: React.FC = () => {
                   : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
               } border focus:outline-none focus:ring-2 focus:ring-blue-500/50`}
             >
-              {Array.from({ length: 16 - minLevel + 1 }, (_, i) => minLevel + i).map(level => (
+              {Array.from({ length: 16 }, (_, i) => i + 1).map(level => (
                 <option key={level} value={level}>{level}</option>
               ))}
             </select>
@@ -352,8 +280,29 @@ const Diagnose: React.FC = () => {
             </div>
 
             <p className={`text-sm mb-4 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-              Целевой уровень: {diagnosis.targetLevel}
+              Целевой уровень: {diagnosis.targetLevel}. В расчёте учтены золото и копии карт.
+              Введённые копии и джокеры уменьшают остаток по картам. Баланс золота и самоцветы не учитываются.
             </p>
+            {diagnosis.details.some(item => item.rarity === null) && (
+              <p className="mb-4 text-sm text-orange-700 dark:text-orange-300">
+                Итог частичный. Для позиций с пометкой «Нет данных» стоимость неизвестна.
+              </p>
+            )}
+
+            {Boolean(upgradeOrder?.length) && (
+              <details className="mb-4 rounded border border-gray-300 p-3 dark:border-gray-600">
+                <summary className="cursor-pointer font-semibold">Порядок улучшений</summary>
+                <p className="my-2 text-sm">Сначала переходы на более низкие уровни. При одинаковом уровне первым идёт самый дешёвый переход.</p>
+                <ol className="list-decimal space-y-1 pl-6 text-sm">
+                  {upgradeOrder?.map(step => (
+                    <li key={`${step.card}-${step.level}`}>
+                      {step.card} → ур. {step.level} · {step.gold.toLocaleString('ru-RU')} золота · копий: {step.copies}
+                    </li>
+                  ))}
+                </ol>
+              </details>
+            )}
+            {unopenedCards.length > 0 && <p className="mb-4 text-sm">Не открыты: {unopenedCards.join(', ')}.</p>}
 
             <div className="mb-4">
               <button
@@ -410,12 +359,12 @@ const Diagnose: React.FC = () => {
                             <CardIcon cardId={item.card} className="w-8 h-8" />
                             <span className="text-sm">{item.card}</span>
                           </td>
-                          <td className="px-4 py-2 text-sm">{item.currentLevel}</td>
+                          <td className="px-4 py-2 text-sm">{item.currentLevel || 'Не открыта'}</td>
                           <td className={`px-4 py-2 text-sm font-mono ${isDark ? 'text-gray-300' : ''}`}>
-                            {item.neededGold > 0 ? formatNumber(item.neededGold) : '✅'}
+                            {!item.rarity ? 'Нет данных' : formatNumber(item.neededGold)}
                           </td>
                           <td className={`px-4 py-2 text-sm font-mono ${isDark ? 'text-gray-300' : ''}`}>
-                            {item.neededCards > 0 ? Math.max(0, item.neededCards - item.cardsHave) : '✅'}
+                            {!item.rarity ? 'Нет данных' : Math.max(0, item.neededCards - item.cardsHave)}
                           </td>
                           <td className="px-4 py-2">
                             <input

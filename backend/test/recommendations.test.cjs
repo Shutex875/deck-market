@@ -13,7 +13,7 @@ function request(path, body, prisma, createRouter = createRecommendationsRouter,
     (!options.method || layer.route.methods[options.method])).route;
   const response = { statusCode: 200 };
   const res = {
-    locals: { user: { id: 'user-a', canManageCatalog: options.canManageCatalog ?? true } },
+    locals: { user: { id: 'user-a', username: 'catalog-admin', canManageCatalog: options.canManageCatalog ?? true } },
     status(code) {
       response.statusCode = code;
       return this;
@@ -180,6 +180,60 @@ test('explicit recommendation mode controls ranking independently of card filter
   assert.equal(queries[2].where, undefined);
 });
 
+test('both recommendation modes report the same owned levels and missing cards', async () => {
+  const cards = ['The Log', 'Knight', 'Archers', 'Skeleton', 'Fireball', 'Cannon', 'Hog Rider', 'Valkyrie'];
+  const levels = { Log: 1, Knight: 13, Archers: 13, Skeleton: 13, Fireball: 13, Cannon: 13, Valkyrie: 13 };
+  const prisma = {
+    player: { findUnique: async () => ({ levels: JSON.stringify(levels), evolutions: '[]', heroes: '[]' }) },
+    metaDeck: { findMany: async () => [{
+      id: 'deck', cards: JSON.stringify(cards), winRate: 55, slot2Type: null, source: { name: 'Source' },
+    }] },
+  };
+  const recommend = async mode => {
+    const result = await request('/recommend', { playerName: 'Player', mode }, prisma);
+    assert.equal(result.statusCode, 200);
+    return result.body.decks[0];
+  };
+  const [account, meta] = await Promise.all([recommend('account'), recommend('meta')]);
+  assert.deepEqual(account.cardLevels, meta.cardLevels);
+  assert.equal(account.cardLevels['The Log'], 1);
+  assert.equal(account.cardLevels['Hog Rider'], null);
+  for (const deck of [account, meta]) {
+    assert.equal(deck.missingCardsCount, 1);
+    assert.equal(deck.averageLevel, 79 / 7);
+  }
+  assert.equal(meta.score, 55);
+  assert.equal(account.score, 10);
+});
+
+test('both diagnoses use the same upgrade costs and validate the target level', async () => {
+  const levels = { Knight: 14, Archers: 15, Skeleton: 16 };
+  const prisma = {
+    player: { findUnique: async () => ({ id: 'p', levels: JSON.stringify(levels) }) },
+    savedDeck: { findFirst: async () => ({ name: 'Deck', cards: JSON.stringify(Object.keys(levels)) }) },
+  };
+  const body = { playerName: 'Player', deckId: 'deck' };
+  for (const path of ['/diagnose', '/diagnose-deck']) {
+    for (const targetLevel of [0, 17, 15.5, '16', null]) {
+      assert.equal((await request(path, { ...body, targetLevel }, {})).statusCode, 400);
+    }
+    const adjacent = await request(path, { ...body, targetLevel: 15 }, prisma);
+    assert.equal(adjacent.body.totalGold, 90000);
+    assert.equal(adjacent.body.details.find(detail => detail.card === 'Knight').neededCards, 5500);
+
+    const max = await request(path, { ...body, targetLevel: 16 }, prisma);
+    assert.equal(max.body.totalGold, 330000);
+    assert.equal(max.body.details.find(detail => detail.card === 'Archers').neededGold, 120000);
+    assert.equal(max.body.details.find(detail => detail.card === 'Archers').neededCards, 7500);
+    const maxedCard = max.body.details.find(detail => detail.card === 'Skeleton');
+    if (path === '/diagnose-deck') {
+      assert.deepEqual([maxedCard.neededGold, maxedCard.neededCards], [0, 0]);
+    } else {
+      assert.equal(maxedCard, undefined);
+    }
+  }
+});
+
 test('Clan War accepts card filters and required deck IDs with the exact account name', async () => {
   const result = await request('/recommend-cw', {
     playerName: ' Player ',
@@ -196,6 +250,49 @@ test('Clan War accepts card filters and required deck IDs with the exact account
     },
   });
   assert.deepEqual(result, { statusCode: 404, body: { error: 'Player not found' } });
+});
+
+test('Clan War expands the pool only when saved decks cannot form a filtered group of four', async () => {
+  const groups = Array.from({ length: 5 }, (_, group) =>
+    Array.from({ length: 8 }, (_, card) => `card-${group}-${card}`));
+  const row = (id, cards) => ({ id, name: id, cards: JSON.stringify(cards) });
+  const saved = groups.slice(0, 4).map((cards, index) => row(`saved-${index}`, cards));
+  const levels = JSON.stringify(Object.fromEntries(groups.flat().map(card => [card, 15])));
+  const blocked = groups[4][0];
+  let metaReads = 0;
+  const prisma = {
+    player: { findUnique: async () => ({ id: 'p', levels, evolutions: '[]', heroes: '[]' }) },
+    savedDeck: { findMany: async () => saved },
+    metaDeck: { findMany: async ({ where }) => {
+      assert.deepEqual(where, { isActive: true });
+      metaReads++;
+      return [row('blocked-meta', groups[4]), row('valid-meta', groups[3])];
+    } },
+  };
+  const recommend = (overrides = {}) => request('/recommend-cw', {
+    playerName: 'Player', requiredDeckIds: ['saved-0'], excludeCards: [blocked],
+    includeCards: [groups[0][0], groups[2][0]], limit: 1, ...overrides,
+  }, prisma);
+  const resultIds = result => result.body.combinations[0].decks.map(deck => deck.deckId);
+
+  assert.deepEqual(resultIds(await recommend()), ['saved-0', 'saved-1', 'saved-2', 'saved-3']);
+  assert.equal(metaReads, 0);
+
+  // Four saved rows still exist, but two now overlap.
+  saved[3] = row('saved-3', groups[0]);
+  const expanded = await recommend();
+  assert.equal(expanded.body.foundSize, 4);
+  assert.deepEqual(resultIds(expanded), ['saved-0', 'saved-1', 'saved-2', 'valid-meta']);
+  assert.equal(metaReads, 1);
+
+  const best = await recommend({ mode: 'best' });
+  assert.deepEqual(resultIds(best), resultIds(expanded));
+  assert.equal(metaReads, 2);
+
+  const partial = await recommend({ excludeCards: [groups[3][0], blocked] });
+  assert.equal(partial.body.foundSize, 3);
+  assert.deepEqual(resultIds(partial), ['saved-0', 'saved-1', 'saved-2']);
+  assert.ok(partial.body.suggestions.some(suggestion => suggestion.includes('исключённых')));
 });
 
 test('Clan War prioritizes larger groups and preserves tie order within the limit', () => {
@@ -285,7 +382,8 @@ test('duplicate check matches compositions across both catalogs with two databas
 test('Deckshop imports only new names and writes through one transaction per request', async t => {
   const cards = ['Knight', 'Archers', 'Skeleton', 'Ice Spirit', 'Fireball', 'Cannon', 'Hog Rider', 'Valkyrie'];
   const html = ['Existing', 'New', 'New'].map(name =>
-    '<article class="deck-list-item"><h4>' + name + '</h4>' +
+    '<article class="deck-list-item" data-game-mode="Ranked" data-sample-size="1,234"><h4>' + name + '</h4>' +
+    '<span class="win-rate">0%</span>' +
     cards.map(card => '<img alt="' + card + '">').join('') + '</article>'
   ).join('');
   t.mock.method(axios, 'get', async () => ({ status: 200, data: html }));
@@ -314,6 +412,11 @@ test('Deckshop imports only new names and writes through one transaction per req
   assert.equal(transactions, 2);
   assert.equal(stored.get('Existing'), original);
   assert.equal(stored.get('New').avgElixir, 2.9);
+  assert.equal(stored.get('New').addedByUsername, 'catalog-admin');
+  assert.equal(stored.get('New').dataKind, 'match-stats');
+  assert.equal(stored.get('New').gameMode, 'Ranked');
+  assert.equal(stored.get('New').sampleSize, 1234);
+  assert.equal(stored.get('New').winRate, 0);
 });
 
 test('game progress upsert creates the row through the owned player ID', async () => {

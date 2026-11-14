@@ -2,6 +2,7 @@ export interface UserSession {
   id: string;
   username: string;
   canManageCatalog: boolean;
+  isOwner: boolean;
 }
 
 export const requestHeader = { 'X-BastDecks-Request': '1' };

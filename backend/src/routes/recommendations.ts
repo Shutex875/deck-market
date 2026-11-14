@@ -1,3 +1,4 @@
+import { diagnoseUpgrades, isUpgradeTarget, MAX_UPGRADE_LEVEL } from '../services/upgradeDiagnosis';
 import { Router } from 'express';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { z } from 'zod';
@@ -6,6 +7,7 @@ import { cardDataMap } from '../config/cards';
 import { findClanWarCombinations } from '../services/clanWarCombinations';
 import { calculatePlayerBonus, fixDeckTemplate } from '../services/deckService';
 import { scoreFilteredDeck } from '../services/filteredRecommendations';
+import { getDeckAvailability } from '../services/deckAvailability';
 
 const cardFilterError = 'Card filters must be arrays of card IDs';
 const cardFilter = z.array(z.string({ error: cardFilterError }), { error: cardFilterError }).default([]);
@@ -46,6 +48,7 @@ const ordinaryRecommendationRequest = recommendationRequest.extend({
   mode: z.enum(['account', 'meta']).optional(),
 });
 const clanWarRequest = recommendationRequest.extend({
+  mode: z.enum(['saved-first', 'best']).default('saved-first'),
   requiredDeckIds: z.array(
     z.string({ error: requiredDeckIdsError }),
     { error: requiredDeckIdsError },
@@ -136,25 +139,15 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         );
         if (!matchesCards(changedCards)) continue;
 
-        // Расчёт среднего уровня по changedCards
-        let totalLevel = 0;
-        let missingCount = 0;
-        const cardLevels: Record<string, number> = {};
-        changedCards.forEach((cardId: string) => {
-          const level = levels[cardId] || 1;
-          cardLevels[cardId] = level;
-          totalLevel += level;
-          if (level === 1 && !levels[cardId]) missingCount++;
-        });
-        const averageLevel = totalLevel / changedCards.length;
-        const score = averageLevel + bonus;
+        const { cardLevels, averageLevel, missingCardsCount, rankingLevel } = getDeckAvailability(changedCards, rawLevels);
+        const score = rankingLevel + bonus;
 
         scoredDecks.push({
           ...deck,
           cards: changedCards,
           cardLevels,
           averageLevel,
-          missingCardsCount: missingCount,
+          missingCardsCount,
           score,
           bonus,
           replacements,
@@ -179,7 +172,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
     try {
       const parsed = clanWarRequest.safeParse(req.body ?? {});
       if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
-      const { playerName, limit: requestedLimit, includeCards, excludeCards, requiredDeckIds } = parsed.data;
+      const { playerName, limit: requestedLimit, includeCards, excludeCards, requiredDeckIds, mode } = parsed.data;
 
       const limit = normalizeLimit(requestedLimit, 5);
 
@@ -213,68 +206,20 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
       });
       console.log(`📦 Загружено сохранённых колод: ${savedDecks.length}`);
 
-      // 2. Формируем пул колод для оценки
-      let decksToScore: { id: string; name: string; cards: string[]; slot2Type: string | null }[] = [];
-
-      // Если есть обязательные колоды, добавляем их первыми
-      if (requiredDeckIds && requiredDeckIds.length > 0) {
-        const requiredSaved = savedDecks.filter(d => requiredDeckIds.includes(d.id));
-        if (requiredSaved.length !== requiredDeckIds.length) {
-          return res.json({
-            success: true,
-            combinations: [],
-            totalCombinations: 0,
-            message: 'Некоторые выбранные колоды не найдены в сохранённых',
-            playerName,
-          });
-        }
-        requiredSaved.forEach(d => {
-          decksToScore.push({
-            id: d.id,
-            name: d.name,
-            cards: JSON.parse(d.cards),
-            slot2Type: null,
-          });
+      const requiredSet = new Set(requiredDeckIds);
+      const savedIds = new Set(savedDecks.map(deck => deck.id));
+      if (requiredDeckIds.some(id => !savedIds.has(id))) {
+        return res.json({
+          success: true,
+          combinations: [],
+          totalCombinations: 0,
+          message: 'Некоторые выбранные колоды не найдены в сохранённых',
+          playerName,
         });
       }
 
-      // Добавляем остальные сохранённые колоды
-      const savedIds = new Set(decksToScore.map(d => d.id));
-      const otherSaved = savedDecks.filter(d => !savedIds.has(d.id));
-      otherSaved.forEach(d => {
-        decksToScore.push({
-          id: d.id,
-          name: d.name,
-          cards: JSON.parse(d.cards),
-          slot2Type: null,
-        });
-      });
-
-      // Если сохранённых колод меньше 4, добавляем мета-колоды
-      if (decksToScore.length < 4) {
-        const metaDecks = await prisma.metaDeck.findMany({
-          where: { isActive: true },
-          include: { category: true, source: true },
-        });
-        console.log(`📚 Добавлено мета-колод: ${metaDecks.length}`);
-        metaDecks.forEach(md => {
-          if (!decksToScore.some(d => d.id === md.id)) {
-            decksToScore.push({
-              id: md.id,
-              name: md.name,
-              cards: JSON.parse(md.cards),
-              slot2Type: md.slot2Type || null,
-            });
-          }
-        });
-      }
-
-      console.log(`🃏 Всего колод для оценки: ${decksToScore.length}`);
-
-      // 3. Вычисляем score для каждой колоды
-      const scoredDecks = [];
-      for (const deck of decksToScore) {
-        const { cards: fixedCards, slot2Type: fixedSlot2Type } = fixDeckTemplate(deck.cards, deck.slot2Type);
+      function scoreDeck(deck: { id: string; name: string; cards: string; slot2Type?: string | null }) {
+        const { cards: fixedCards, slot2Type: fixedSlot2Type } = fixDeckTemplate(JSON.parse(deck.cards), deck.slot2Type ?? null);
         const { bonus, slotStatus, changedCards } = calculatePlayerBonus(
           fixedCards,
           fixedSlot2Type,
@@ -283,96 +228,83 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
           filteredHeroes
         );
 
-        let totalLevel = 0;
-        let missingCount = 0;
-        changedCards.forEach((cardId: string) => {
-          const level = levels[cardId] || 1;
-          totalLevel += level;
-          if (level === 1 && !levels[cardId]) missingCount++;
-        });
-        const averageLevel = totalLevel / changedCards.length;
-        const score = averageLevel + bonus;
+        const { averageLevel, missingCardsCount } = getDeckAvailability(changedCards, levels);
+        const score = (averageLevel ?? 0) + bonus;
 
-        scoredDecks.push({
+        return {
           deckId: deck.id,
           name: deck.name,
           cards: changedCards,
           averageLevel,
           bonus,
           score,
-          missingCount,
+          missingCount: missingCardsCount,
           tier: undefined,
           winRate: undefined,
           slot2Type: fixedSlot2Type,
           slotStatus,
+        };
+      }
+
+      const requiredCards = new Set(includeCards);
+      const excluded = new Set(excludeCards.map(card => card === 'Log' ? 'The Log' : card));
+      type Candidate = ReturnType<typeof scoreDeck>;
+      const isReady = (deck: Candidate) => deck.cards.length === 8 && deck.missingCount === 0;
+      const passesExclusions = (deck: Candidate) =>
+        !deck.cards.some(card => excluded.has(card === 'Log' ? 'The Log' : card));
+      const savedCandidates = savedDecks.map(scoreDeck).filter(isReady);
+      const pinned = savedCandidates.filter(deck => requiredSet.has(deck.deckId));
+      const readySaved = [...pinned, ...savedCandidates.filter(deck => !requiredSet.has(deck.deckId))];
+      let bestCombinations = mode === 'saved-first'
+        ? findClanWarCombinations(readySaved.filter(passesExclusions), requiredSet, limit, 4, requiredCards)
+        : [];
+      let message: string | undefined;
+      let suggestions: string[] = [];
+      if (!bestCombinations.length) {
+        const metaDecks = await prisma.metaDeck.findMany({
+          where: { isActive: true },
+          select: { id: true, name: true, cards: true, slot2Type: true },
         });
-      }
+        const ready = [...readySaved, ...metaDecks.filter(deck => !savedIds.has(deck.id)).map(scoreDeck).filter(isReady)];
+        const eligible = ready.filter(passesExclusions);
+        bestCombinations = findClanWarCombinations(eligible, requiredSet, limit, 1, requiredCards);
 
-      // 4. Применяем фильтры по картам
-      let filteredDecks = scoredDecks;
-      if (includeCards && includeCards.length > 0) {
-        const before = filteredDecks.length;
-        filteredDecks = filteredDecks.filter(deck =>
-          includeCards.every((cardId: string) => deck.cards.includes(cardId))
-        );
-        console.log(`🔍 Фильтр includeCards (${includeCards.length}): ${before} → ${filteredDecks.length}`);
-      }
-      if (excludeCards && excludeCards.length > 0) {
-        const before = filteredDecks.length;
-        filteredDecks = filteredDecks.filter(deck =>
-          !excludeCards.some((cardId: string) => deck.cards.includes(cardId))
-        );
-        console.log(`🔍 Фильтр excludeCards (${excludeCards.length}): ${before} → ${filteredDecks.length}`);
-      }
+        if ((bestCombinations[0]?.decks.length ?? 0) < 4) {
+          const missingPinned = pinned.length < requiredSet.size;
+          const pinnedCards = pinned.flatMap(deck => deck.cards.map(card => card === 'Log' ? 'The Log' : card));
+          if (missingPinned) message = 'В закреплённых колодах есть недостающие карты или неполный состав.';
+          else if (new Set(pinnedCards).size < pinnedCards.length) message = 'Закреплённые колоды содержат одинаковые карты.';
+          else if (pinned.some(deck => !passesExclusions(deck))) message = 'В закреплённой колоде есть исключённая карта.';
+          else if (ready.length < 4) message = 'В пуле меньше четырёх колод со всеми доступными картами.';
+          else message = 'Не удалось собрать четыре готовые колоды без пересечений с текущими условиями.';
 
-      // 5. Оставляем только колоды с пропущенными картами <= 2
-      const validDecks = filteredDecks.filter(d => d.missingCount <= 2);
-      console.log(`✅ Колод с missingCount <= 2: ${validDecks.length} (из ${filteredDecks.length})`);
-
-      if (validDecks.length < 2) {
-        return res.json({
-          success: true,
-          combinations: [],
-          totalCombinations: 0,
-          message: `Недостаточно колод (${validDecks.length}) для составления связки. Зарегистрируйте новые колоды или улучшите карты!`,
-          playerName,
-        });
-      }
-
-      // 6. Проверяем обязательные колоды
-      const requiredSet = new Set<string>(requiredDeckIds || []);
-      if (requiredSet.size > 0) {
-        const foundRequired = validDecks.filter(d => requiredSet.has(d.deckId));
-        if (foundRequired.length !== requiredSet.size) {
-          return res.json({
-            success: true,
-            combinations: [],
-            totalCombinations: 0,
-            message: 'Некоторые обязательные колоды не прошли фильтрацию по картам или имеют слишком много пропусков',
-            playerName,
-          });
+          suggestions = [];
+          const empty = new Set<string>();
+          if (requiredCards.size && findClanWarCombinations(eligible, requiredSet, 1, 4).length) {
+            suggestions.push('Ослабьте фильтр обязательных карт.');
+          }
+          if (excluded.size && findClanWarCombinations(ready, requiredSet, 1, 4, requiredCards).length) {
+            suggestions.push('Ослабьте фильтр исключённых карт.');
+          }
+          if (requiredSet.size && findClanWarCombinations(eligible, empty, 1, 4, requiredCards).length) {
+            suggestions.push('Снимите одно или несколько закреплений колод.');
+          }
+          if (!suggestions.length && (requiredCards.size || excluded.size || requiredSet.size) &&
+              findClanWarCombinations(ready, empty, 1, 4).length) {
+            suggestions.push('Попробуйте ослабить несколько условий одновременно.');
+          }
+          if (!suggestions.length) suggestions.push('Добавьте колоды с доступными картами и другими составами.');
         }
-      }
-
-      const bestCombinations = findClanWarCombinations(validDecks, requiredSet, limit);
-
-      if (bestCombinations.length === 0) {
-        return res.json({
-          success: true,
-          combinations: [],
-          totalCombinations: 0,
-          message: 'Не найдено связок без пересечений. Попробуйте изменить фильтры или добавьте больше колод!',
-          playerName,
-        });
       }
 
       res.json({
         success: true,
         combinations: bestCombinations,
         totalCombinations: bestCombinations.length,
-        foundSize: bestCombinations[0].decks.length,
+        foundSize: bestCombinations[0]?.decks.length ?? 0,
         playerName,
-        message: undefined,
+        message,
+        suggestions,
       });
     } catch (error: any) {
       console.error('❌ Ошибка в /api/recommend-cw:', error);
@@ -383,41 +315,27 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
 
   router.post('/diagnose', async (req, res) => {
     try {
-      const { playerName, targetLevel = 13 } = req.body;
+      const { playerName, targetLevel = 13 } = req.body ?? {};
       if (typeof playerName !== 'string' || !playerName) return res.status(400).json({ error: 'Player name is required' });
+
+      if (!isUpgradeTarget(targetLevel)) {
+        return res.status(400).json({ error: 'Целевой уровень должен быть целым числом от 1 до ' + MAX_UPGRADE_LEVEL });
+      }
 
       const player = await prisma.player.findUnique({ where: { ownerId_name: { ownerId: userId(res), name: playerName } } });
       if (!player) return res.status(404).json({ error: 'Player not found' });
 
-      const levels = JSON.parse(player.levels);
-      const upgradeCosts: Record<number, number> = {
-        1: 0, 2: 5, 3: 20, 4: 50, 5: 150, 6: 400, 7: 1000, 8: 2000,
-        9: 4000, 10: 8000, 11: 20000, 12: 50000, 13: 100000
-      };
-
-      const diagnosis: { card: string; currentLevel: number; neededGold: number }[] = [];
-      let totalGold = 0;
-
-      Object.keys(levels).forEach(card => {
-        const current = levels[card] || 1;
-        if (current < targetLevel) {
-          let cost = 0;
-          for (let lv = current; lv < targetLevel; lv++) {
-            cost += upgradeCosts[lv] || 0;
-          }
-          totalGold += cost;
-          diagnosis.push({ card, currentLevel: current, neededGold: cost });
-        }
-      });
-
-      diagnosis.sort((a, b) => b.neededGold - a.neededGold);
+      const levels: Record<string, number> = JSON.parse(player.levels);
+      const cards = Object.keys(levels).filter(card => levels[card] < targetLevel);
+      const { details, totalGold } = diagnoseUpgrades(cards, levels, targetLevel);
+      details.sort((a, b) => b.neededGold - a.neededGold);
 
       res.json({
         success: true,
         playerName,
         targetLevel,
         totalGold,
-        details: diagnosis,
+        details,
       });
     } catch (error) {
       console.error(error);
@@ -526,9 +444,13 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
 
   router.post('/diagnose-deck', async (req, res) => {
     try {
-      const { playerName, deckId } = req.body;
-      if (!playerName || !deckId) {
+      const { playerName, deckId, targetLevel = MAX_UPGRADE_LEVEL } = req.body ?? {};
+      if (typeof playerName !== 'string' || !playerName.trim() || typeof deckId !== 'string' || !deckId.trim()) {
         return res.status(400).json({ error: 'Player name and deckId are required' });
+      }
+
+      if (!isUpgradeTarget(targetLevel)) {
+        return res.status(400).json({ error: 'Целевой уровень должен быть целым числом от 1 до ' + MAX_UPGRADE_LEVEL });
       }
 
       const player = await prisma.player.findUnique({ where: { ownerId_name: { ownerId: userId(res), name: playerName } } });
@@ -541,34 +463,13 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
 
       const cards: string[] = JSON.parse(savedDeck.cards);
       const levels: Record<string, number> = JSON.parse(player.levels);
-      const targetLevel = 16;
-
-      // Стоимости апгрейда с 1 по 16
-      const upgradeCosts: Record<number, number> = {
-        1: 0, 2: 5, 3: 20, 4: 50, 5: 150, 6: 400, 7: 1000, 8: 2000,
-        9: 4000, 10: 8000, 11: 20000, 12: 50000, 13: 100000, 14: 200000, 15: 400000, 16: 800000
-      };
-
-      const diagnosis = cards.map((cardId: string) => {
-        const currentLevel = levels[cardId] || 1;
-        let cost = 0;
-        for (let lv = currentLevel; lv < targetLevel; lv++) {
-          cost += upgradeCosts[lv] || 0;
-        }
-        return {
-          card: cardId,
-          currentLevel,
-          neededGold: cost,
-        };
-      });
-
-      const totalGold = diagnosis.reduce((sum, item) => sum + item.neededGold, 0);
+      const { details, totalGold } = diagnoseUpgrades(cards, levels, targetLevel);
 
       res.json({
         success: true,
         deckName: savedDeck.name,
         totalGold,
-        details: diagnosis,
+        details,
         targetLevel,
       });
     } catch (error) {

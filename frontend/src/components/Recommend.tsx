@@ -1,7 +1,6 @@
-import ProfileSwitcher from './ProfileSwitcher';
+import { useActivePlayer } from '../context/ActivePlayer';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useState, useEffect, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as Dialog from '@radix-ui/react-dialog';
 import {
@@ -14,10 +13,8 @@ import {
   FunnelIcon,
 } from '@heroicons/react/24/outline';
 import {
-  getPlayers,
   recommendDecks,
   type RecommendationMode,
-  Player,
   saveDeck,
   deleteSavedDeck,
   type RecommendResponse,
@@ -46,11 +43,9 @@ const safeString = (value: any): string => {
 const Recommend: React.FC = () => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
-  const [searchParams] = useSearchParams();
-  const requestedPlayer = searchParams.get('player');
 
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [selectedPlayer, setSelectedPlayer] = useState('');
+  const { activePlayer } = useActivePlayer();
+  const selectedPlayer = activePlayer?.name ?? '';
   const [limit, setLimit] = useState(1); // по умолчанию 1
   const [mode, setMode] = useState<RecommendationMode>('account');
   const [decks, setDecks] = useState<RecommendedDeck[]>([]);
@@ -72,21 +67,6 @@ const Recommend: React.FC = () => {
 
   useEffect(() => () => recommendRequest.current?.abort(), []);
 
-  useEffect(() => {
-    const fetchPlayers = async () => {
-      try {
-        const data = await getPlayers();
-        setPlayers(data);
-        if (data.length > 0) {
-          const initialPlayer = data.find(player => player.name === requestedPlayer) || data[0];
-          setSelectedPlayer(initialPlayer.name);
-        }
-      } catch (err) {
-        console.error(err);
-      }
-    };
-    fetchPlayers();
-  }, []);
 
   const hasActiveFilter = includeCards.length > 0 || excludeCards.length > 0;
 
@@ -125,16 +105,6 @@ const Recommend: React.FC = () => {
 
   const handleClearFilter = () => handleApplyFilter([], []);
 
-  const handlePlayerChange = (playerName: string) => {
-    recommendRequest.current?.abort();
-    recommendRequest.current = null;
-    setSelectedPlayer(playerName);
-    setShowSaveModal(false);
-    setDecks([]);
-    setTotalDecks(null);
-    setLoading(false);
-    setError('');
-  };
 
   const handleSaveDeck = (deck: RecommendedDeck) => {
     setSaveDeckData({ cards: deck.cards, name: deck.name });
@@ -220,7 +190,7 @@ const Recommend: React.FC = () => {
 
       <div className={`p-4 rounded-lg shadow mb-6 transition-colors duration-200 ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
         <div className="flex flex-wrap items-end gap-4">
-          <ProfileSwitcher profiles={players} value={selectedPlayer} className="flex-1 min-w-[200px]" onChange={handlePlayerChange} />
+          {selectedPlayer && <p className="text-sm">Аккаунт <strong>{selectedPlayer}</strong></p>}
           <div>
             <label className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
               Кол-во колод
@@ -349,23 +319,15 @@ const Recommend: React.FC = () => {
                     </h3>
                     <div className={`text-sm flex items-center gap-2 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
                       <ChartBarIcon className="w-4 h-4" />
-                      <span className="font-semibold">{mode === 'account'
-                        ? `Оценка ${deck.score.toFixed(2)}`
-                        : deck.winRate !== null ? `Винрейт ${deck.winRate}%`
-                          : deck.tier ? `Тир ${deck.tier}` : 'Без оценки меты'}</span>
+                      <span className="font-semibold">
+                        Мета: {deck.winRate !== null ? `${deck.winRate}% побед` : deck.tier ? `тир ${deck.tier}` : 'без оценки'}
+                      </span>
                     </div>
                   </div>
 
                   <div className={`text-sm mt-1 flex flex-wrap items-center gap-2 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
                     <span>Категория: {safeString(deck.category)}</span>
                     <span>Источник: {safeString(deck.source)}</span>
-                    {deck.tier && <span>Тир: {safeString(deck.tier)}</span>}
-                    {mode === 'account' && deck.winRate !== null && <span>Винрейт: {deck.winRate}%</span>}
-                    <p className="w-full">
-                      {mode === 'account'
-                        ? `Средний уровень ${deck.averageLevel.toFixed(2)} + бонус слотов ${deck.bonus.toFixed(2)}. Недостающие карты считаются за 1-й уровень.`
-                        : `Сначала по винрейту, при его отсутствии — по тиру. Средний уровень на аккаунте: ${deck.averageLevel.toFixed(2)}.`}
-                    </p>
                     {deck.replacements && deck.replacements.length > 0 && (
                       <div className="text-xs text-orange-500 w-full mt-1">
                         {deck.replacements.map((r, i) => (
@@ -403,6 +365,7 @@ const Recommend: React.FC = () => {
                     {deck.cards.map((cardId, idx) => {
                       const borderClass = getSlotBorderClass(idx, deck.slot2Type, cardId);
                       const customSrc = getCardCustomSrc(cardId, idx, deck.slot2Type, deck.slotStatus);
+                      const level = deck.cardLevels[cardId];
                       return (
                         <div
                           key={idx}
@@ -413,19 +376,27 @@ const Recommend: React.FC = () => {
                             className="w-12 h-12 mx-auto"
                             customSrc={customSrc}
                           />
-                          <div className="text-xs text-center mt-1 dark:text-gray-300">
-                            {deck.cardLevels && deck.cardLevels[cardId] ? `Ур.${deck.cardLevels[cardId]}` : '—'}
+                          <div className={`text-xs text-center mt-1 ${level == null ? 'font-semibold text-orange-700 dark:text-orange-300' : 'dark:text-gray-300'}`}>
+                            {level == null ? 'Нет карты' : `Ур. ${level}`}
                           </div>
                         </div>
                       );
                     })}
                   </div>
 
-                  <div className="mt-2 text-sm">
-                    {deck.missingCardsCount === 0 ? (
-                      <span className="text-green-600">✅ Все карты есть</span>
-                    ) : (
-                      <span className="text-orange-500">⚠️ Нет {safeString(deck.missingCardsCount)} карт</span>
+                  <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-sm">
+                    <span className={isFull && deck.missingCardsCount === 0
+                      ? 'font-semibold text-green-700 dark:text-green-300'
+                      : 'font-semibold text-orange-700 dark:text-orange-300'}>
+                      {deck.missingCardsCount > 0
+                        ? `Не хватает карт: ${deck.missingCardsCount} из ${cardCount}`
+                        : isFull ? 'Все карты доступны' : 'Колода неполная'}
+                    </span>
+                    {deck.averageLevel != null && <span>Ср. уровень доступных карт: {deck.averageLevel.toFixed(2)}</span>}
+                    {mode === 'account' && (
+                      <span title="При расчёте оценки недостающие карты учитываются как карты 1-го уровня">
+                        Оценка аккаунта: {deck.score.toFixed(2)} (бонус слотов +{deck.bonus.toFixed(2)})
+                      </span>
                     )}
                   </div>
                 </motion.div>

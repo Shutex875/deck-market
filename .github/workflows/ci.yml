@@ -38,3 +38,8 @@ jobs:
         npm ci
         npm run typecheck
         npm run build
+
+    - name: Build Docker images
+      run: |
+        docker build -t bastdecks-backend:ci backend
+        docker build -t bastdecks-frontend:ci frontend

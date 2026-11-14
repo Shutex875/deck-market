@@ -1,5 +1,6 @@
 import type { Category, MetaDeck, Source } from '@prisma/client';
 import { cardDataMap } from '../config/cards';
+import { getDeckAvailability } from './deckAvailability';
 
 const tierScores = new Map([['S', 100], ['A', 80], ['B', 60]]);
 
@@ -13,21 +14,23 @@ export function scoreFilteredDeck(
   const { id, name, tier, winRate, source } = deck;
   const slot2Type = deck.slot2Type || null;
   const [firstCard, secondCard, thirdCard] = cards;
-  const firstType = evolutions.has(firstCard) ? 'evo' : 'none';
-  const secondType = heroes.has(secondCard) ? 'hero' : cardDataMap[secondCard]?.champion ? 'champion' : 'none';
-  const thirdType = (slot2Type !== 'hero' && evolutions.has(thirdCard))
+  const { cardLevels, averageLevel, missingCardsCount } = getDeckAvailability(cards, levels);
+  const hasEvolution = (card: string) => cardLevels[card] != null && !!cardDataMap[card]?.evoFile && evolutions.has(card);
+  const hasHero = (card: string) => cardLevels[card] != null && !!cardDataMap[card]?.heroFile && heroes.has(card);
+  const firstType = hasEvolution(firstCard) ? 'evo' : 'none';
+  const secondType = hasHero(secondCard) ? 'hero'
+    : cardLevels[secondCard] != null && cardDataMap[secondCard]?.champion ? 'champion' : 'none';
+  const thirdType = (slot2Type !== 'hero' && hasEvolution(thirdCard))
     ? 'evo'
-    : (slot2Type !== 'evo' && heroes.has(thirdCard)) ? 'hero' : 'none';
-  const cardLevels = Object.fromEntries(cards.filter(card => Object.prototype.hasOwnProperty.call(levels, card))
-    .map(card => [card, levels[card]]));
+    : (slot2Type !== 'evo' && hasHero(thirdCard)) ? 'hero' : 'none';
 
   return {
     id,
     name,
     cards,
     cardLevels,
-    averageLevel: cards.reduce((sum, card) => sum + (levels[card] || 0), 0) / cards.length,
-    missingCardsCount: cards.filter(card => !levels[card]).length,
+    averageLevel,
+    missingCardsCount,
     score: winRate ?? tierScores.get(tier ?? '') ?? 40,
     bonus: 0,
     tier,

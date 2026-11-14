@@ -1,15 +1,16 @@
 # Используем официальный образ Node.js
 FROM node:20-alpine
+RUN apk add --no-cache openssl
 
 # Устанавливаем рабочую директорию внутри контейнера
 WORKDIR /app
 
 # Копируем файлы зависимостей
-COPY package*.json ./
+COPY package.json package-lock.json ./
 COPY prisma ./prisma/
 
 # Устанавливаем зависимости и генерируем Prisma Client
-RUN npm install
+RUN npm ci
 RUN npx prisma generate
 
 # Копируем остальной код бэкенда

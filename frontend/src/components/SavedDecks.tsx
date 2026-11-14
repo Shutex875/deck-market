@@ -1,7 +1,7 @@
-import ProfileSwitcher from './ProfileSwitcher';
+import { useActivePlayer } from '../context/ActivePlayer';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   UserIcon,
@@ -11,7 +11,7 @@ import {
   TrashIcon,
   CalendarIcon,
 } from '@heroicons/react/24/outline';
-import { getPlayers, getPlayer, Player, deleteSavedDeck } from '../api';
+import { getPlayer, deleteSavedDeck } from '../api';
 import { CardIcon } from '../utils/cardImages';
 import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
@@ -20,31 +20,14 @@ const SavedDecks: React.FC = () => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const requestedPlayer = searchParams.get('player');
 
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [selectedPlayer, setSelectedPlayer] = useState('');
+  const { activePlayer } = useActivePlayer();
+  const selectedPlayer = activePlayer?.name ?? '';
   const { decks, loading, error, reload } = useSavedDecks(selectedPlayer);
   const [profile, setProfile] = useState<{ name: string; evolutions: string[]; heroes: string[] }>();
   const playerEvolutions = profile?.name === selectedPlayer ? profile.evolutions : [];
   const playerHeroes = profile?.name === selectedPlayer ? profile.heroes : [];
 
-  useEffect(() => {
-    const fetchPlayers = async () => {
-      try {
-        const data = await getPlayers();
-        setPlayers(data);
-        if (data.length > 0) {
-          const initialPlayer = data.find(player => player.name === requestedPlayer) || data[0];
-          setSelectedPlayer(initialPlayer.name);
-        }
-      } catch (err) {
-        console.error(err);
-      }
-    };
-    fetchPlayers();
-  }, []);
 
   useEffect(() => {
     if (!selectedPlayer) return;
@@ -73,7 +56,7 @@ const SavedDecks: React.FC = () => {
 
   const handleDiagnose = (deckId: string) => {
     const params = new URLSearchParams({ deckId, player: selectedPlayer });
-    navigate(`/diagnose?${params.toString()}`);
+    navigate(`/upgrade-plan?${params.toString()}`);
   };
 
   // Функции для отображения специальных слотов с учётом данных игрока
@@ -136,7 +119,7 @@ const SavedDecks: React.FC = () => {
     }`}>
       <h2 className="text-2xl font-bold mb-4">Мои колоды</h2>
 
-      <ProfileSwitcher profiles={players} value={selectedPlayer} className="mb-6 max-w-xs" onChange={setSelectedPlayer} />
+      {selectedPlayer && <p className="text-sm">Аккаунт <strong>{selectedPlayer}</strong></p>}
 
       {error && <div className={`mb-4 p-3 rounded-lg ${
         isDark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-600'

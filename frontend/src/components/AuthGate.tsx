@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import PasswordInput from './PasswordInput';
 import { authenticate, getSession, onSessionExpired, SessionRequestError, signOut, type UserSession } from '../api/session';
 import { useTheme } from '../context/ThemeContext';
+import { useNavigate } from 'react-router-dom';
 
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof SessionRequestError && error.message ? error.message : fallback;
@@ -11,6 +12,7 @@ export default function AuthGate({ children }: {
   children: (user: UserSession, logout: () => Promise<void>, updateUser: (user: UserSession) => void) => ReactNode;
 }) {
   const { theme } = useTheme();
+  const navigate = useNavigate();
   const dark = theme === 'dark';
   const [user, setUser] = useState<UserSession | null | undefined>();
   const [retry, setRetry] = useState(0);
@@ -46,6 +48,7 @@ export default function AuthGate({ children }: {
     try {
       setUser(await authenticate(mode, username, password));
       setPassword('');
+      navigate('/', { replace: true });
     } catch (error) {
       setError(errorMessage(error, 'Не удалось связаться с сервером.'));
     } finally {

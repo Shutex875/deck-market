@@ -7,6 +7,16 @@ import { ALL_CARDS_DATA } from '../config/cards';
 import { calculateAverageElixir } from '../config/elixirCosts';
 import { parseDeckshopDecks } from '../services/deckshopParser';
 import { parseTopLadderDeck } from '../services/topLadderParser';
+import { z } from 'zod';
+
+const deckProvenance = z.object({
+  dataKind: z.enum(['match-stats', 'manual-tier', 'top-ladder', 'example']).nullable().optional(),
+  gameMode: z.string().trim().min(1).max(80).nullable().optional(),
+  dataDate: z.iso.date().nullable().optional(),
+  sampleSize: z.number().int().min(1).max(2147483647).nullable().optional(),
+  winRate: z.union([z.number(), z.string().trim().regex(/^\d+(?:\.\d+)?$/).transform(Number)])
+    .pipe(z.number().min(0).max(100)).nullable().optional(),
+});
 
 const GEMINI_ATTEMPT_TIMEOUT_MS = 15_000;
 const GEMINI_TOTAL_TIMEOUT_MS = 50_000;
@@ -703,10 +713,13 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
         await prisma.metaDeck.create({
           data: {
             name,
+            addedByUsername: res.locals.user.username,
             cards: JSON.stringify(deck.cards),
             avgElixir,
             description: `Импортировано из Топ-15 (${safePlayerName}, #${rank} Global) — ${importedAt}`,
             tier: 'Top Ladder',
+            dataKind: 'top-ladder',
+            gameMode: 'Top Ladder',
             categoryId: category.id,
             sourceId: source.id,
             externalId: `top-ladder:${deck.player.tag}`,
@@ -832,7 +845,9 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
     try {
       const { id } = req.params;
       if (typeof id !== 'string') return res.status(400).json({ error: 'Invalid ID' });
-      const { name, cards, description, slot2Type, tier, winRate, categoryId, sourceId, sourceUrl } = req.body;
+      const { name, cards, description, slot2Type, tier, categoryId, sourceId, sourceUrl } = req.body ?? {};
+      const provenance = deckProvenance.safeParse(req.body);
+      if (!provenance.success) return res.status(400).json({ error: 'Проверьте дату, режим, винрейт и размер выборки' });
       if (!name || !cards || !Array.isArray(cards) || cards.length !== 8) {
         return res.status(400).json({ error: 'Name and exactly 8 cards are required' });
       }
@@ -853,7 +868,8 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
           ...(description !== undefined && { description: description || null }),
           slot2Type: slot2Type || null,
           tier: tier || null,
-          winRate: winRate ? parseFloat(winRate) : null,
+          ...provenance.data,
+          winRate: provenance.data.winRate ?? null,
           avgElixir,
           categoryId,
           sourceId,
@@ -924,6 +940,9 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
         avgElixir: calculateAverageElixir(deck.cards),
         tier: deck.tier ?? null,
         winRate: deck.winRate ?? null,
+        sampleSize: deck.sampleSize,
+        gameMode: deck.gameMode,
+        dataKind: deck.winRate !== null || deck.sampleSize !== null ? 'match-stats' : null,
         sourceUrl: successUrl,
       }));
       const imported = await prisma.$transaction(async tx => {
@@ -942,7 +961,12 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
           const saved = await tx.metaDeck.upsert({
             where: { name: deck.name },
             update: { name: deck.name },
-            create: { ...deck, sourceId: source.id, categoryId: categoryRecord.id },
+            create: {
+              ...deck,
+              sourceId: source.id,
+              categoryId: categoryRecord.id,
+              addedByUsername: res.locals.user.username,
+            },
             select: { id: true },
           });
           if (saved.id === deck.id) inserted++;
@@ -967,7 +991,9 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
   
   router.post('/meta-decks', requireCatalogOwner, async (req, res) => {
     try {
-      const { name, cards, description, slot2Type, tier, winRate, categoryId, sourceId, sourceUrl, externalId } = req.body;
+      const { name, cards, description, slot2Type, tier, categoryId, sourceId, sourceUrl, externalId } = req.body ?? {};
+      const provenance = deckProvenance.safeParse(req.body);
+      if (!provenance.success) return res.status(400).json({ error: 'Проверьте дату, режим, винрейт и размер выборки' });
       if (!name || !cards || !Array.isArray(cards) || cards.length !== 8) {
         return res.status(400).json({ error: 'Name and exactly 8 cards are required' });
       }
@@ -983,11 +1009,15 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
       const newDeck = await prisma.metaDeck.create({
         data: {
           name,
+          addedByUsername: res.locals.user.username,
           cards: JSON.stringify(cards),
           description: description || null,
           slot2Type: slot2Type || null,
           tier: tier || null,
-          winRate: winRate ? parseFloat(winRate) : null,
+          ...provenance.data,
+          dataKind: provenance.data.dataKind === undefined && tier && provenance.data.winRate == null
+            ? 'manual-tier' : provenance.data.dataKind,
+          winRate: provenance.data.winRate ?? null,
           avgElixir,
           categoryId,
           sourceId,
@@ -1039,11 +1069,13 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
           await prisma.metaDeck.create({
             data: {
               name: deck.name,
+              addedByUsername: res.locals.user.username,
               cards: JSON.stringify(deck.cards),
               avgElixir: calculateAverageElixir(deck.cards),
               slot2Type: deck.slot2Type || null,
               tier: deck.tier || null,
               winRate: deck.winRate || null,
+              dataKind: 'example',
               sourceId: mockSource.id,
               categoryId: generalCategory.id,
               isActive: true,

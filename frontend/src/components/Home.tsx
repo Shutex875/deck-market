@@ -1,7 +1,6 @@
-import ProfileSwitcher from './ProfileSwitcher';
+import { useActivePlayer } from '../context/ActivePlayer';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { getPlayers, type Player } from '../api';
 import { CardIcon } from '../utils/cardImages';
 import { cardTranslations } from '../utils/cardTranslations';
 
@@ -45,8 +44,8 @@ const getCardSceneEffect = (cardId: string): string => {
 export default function Home({ theme }: { theme: string }) {
   const isDark = theme === 'dark';
 
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [selectedPlayer, setSelectedPlayer] = useState('');
+  const { players, activePlayer } = useActivePlayer();
+  const selectedPlayer = activePlayer?.name ?? '';
   const [gameState, setGameState] = useState<'idle' | 'preSelect' | 'countdown' | 'playing' | 'animating' | 'result' | 'gameOver'>('idle');
   const [countdown, setCountdown] = useState(3);
   const [playerCards, setPlayerCards] = useState<string[]>([]);
@@ -150,20 +149,6 @@ export default function Home({ theme }: { theme: string }) {
     localStorage.removeItem(key);
     setGameSaved(false);
   };
-
-  // Загрузка игроков
-  useEffect(() => {
-    const fetchPlayers = async () => {
-      try {
-        const data = await getPlayers();
-        setPlayers(data);
-        if (data.length > 0) setSelectedPlayer(data[0].name);
-      } catch (err) {
-        console.error('Ошибка загрузки игроков', err);
-      }
-    };
-    fetchPlayers();
-  }, []);
 
   // Загрузка прогресса и рекорда при смене игрока
   useEffect(() => {
@@ -408,7 +393,7 @@ export default function Home({ theme }: { theme: string }) {
             </div>
           )}
 
-          <ProfileSwitcher profiles={players} value={selectedPlayer} className="mb-4" onChange={setSelectedPlayer} />
+          {selectedPlayer && <p className="mb-4 text-sm">Аккаунт <strong>{selectedPlayer}</strong></p>}
 
           <div className="flex flex-wrap gap-3 justify-center">
             <button

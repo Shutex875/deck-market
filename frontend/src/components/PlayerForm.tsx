@@ -13,7 +13,7 @@ import { savePlayer, getPlayer, getClashRoyalePlayerStats } from '../api';
 import { ALL_CARDS_DATA, getEvoCards, getHeroCards, rarityColors, Rarity } from '../data/cards';
 import { cardTranslations } from '../utils/cardTranslations';
 import { CardIcon } from '../utils/cardImages';
-import { isHeroUpgradeId, mapClashRoyalePlayerToAccount } from '../utils/clashRoyaleAccountSync';
+import { mapClashRoyalePlayerToAccount } from '../utils/clashRoyaleAccountSync';
 import { useTheme } from '../context/ThemeContext';
 
 const ALL_CARDS = ALL_CARDS_DATA.map(c => c.id);
@@ -158,7 +158,7 @@ const PlayerForm: React.FC = () => {
       setLevels(previous => ({ ...previous, ...synced.levels }));
       setEvolutions(previous => [...new Set([...previous, ...synced.evolutions])]);
       setHeroes(previous => [
-        ...new Set([...previous.filter(isHeroUpgradeId), ...synced.heroes]),
+        ...new Set([...previous, ...synced.heroes]),
       ]);
       setPlayerTag(stats.tag);
       setLevelInputRevision(previous => previous + 1);

@@ -13,7 +13,8 @@ import {
   BookmarkIcon,
   WrenchScrewdriverIcon,
 } from '@heroicons/react/24/outline';
-import { getPlayers, deletePlayer, Player } from '../api';
+import { refreshPlayers, deletePlayer, Player } from '../api';
+import CollectionSync from './CollectionSync';
 import { useTheme } from '../context/ThemeContext';
 import { isHeroUpgradeId } from '../utils/clashRoyaleAccountSync';
 
@@ -62,8 +63,9 @@ const PlayerList: React.FC = () => {
 
   const fetchPlayers = async () => {
     try {
-      const data = await getPlayers();
+      const data = await refreshPlayers();
       setPlayers(data);
+      setError(null);
       setLoading(false);
     } catch (err) {
       setError('Не удалось загрузить аккаунты');
@@ -73,6 +75,10 @@ const PlayerList: React.FC = () => {
 
   useEffect(() => {
     fetchPlayers();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void fetchPlayers();
+    }, 60_000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const handleDelete = async (name: string) => {
@@ -260,6 +266,7 @@ const PlayerList: React.FC = () => {
                   </span>
                 </div>
 
+                <CollectionSync player={player} refresh={fetchPlayers} />
                 <div className={`mt-3 flex flex-wrap gap-2 border-t pt-3 ${
                   isDark ? 'border-gray-700' : 'border-gray-200'
                 }`}>

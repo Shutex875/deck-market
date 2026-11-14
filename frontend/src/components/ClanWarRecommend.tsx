@@ -1,8 +1,6 @@
-import ProfileSwitcher from './ProfileSwitcher';
+import { useActivePlayer } from '../context/ActivePlayer';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useState, useEffect, useRef } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as Dialog from '@radix-ui/react-dialog';
 import {
@@ -11,7 +9,6 @@ import {
   TrophyIcon,
   SparklesIcon,
   ExclamationTriangleIcon,
-  PlusCircleIcon,
   ArrowPathIcon,
   FunnelIcon,
   BookmarkIcon,
@@ -19,7 +16,7 @@ import {
   CheckIcon,
   InformationCircleIcon,
 } from '@heroicons/react/24/outline';
-import { getPlayers, recommendCW, Player } from '../api';
+import { recommendCW, type ClanWarMode } from '../api';
 import { CardIcon } from '../utils/cardImages';
 import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
@@ -58,18 +55,18 @@ interface CWResponse {
   foundSize: number;
   playerName: string;
   message?: string;
+  suggestions?: string[];
 }
 
 const ClanWarRecommend: React.FC = () => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
-  const [searchParams] = useSearchParams();
-  const requestedPlayer = searchParams.get('player');
 
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [selectedPlayer, setSelectedPlayer] = useState('');
+  const { activePlayer } = useActivePlayer();
+  const selectedPlayer = activePlayer?.name ?? '';
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [mode, setMode] = useState<ClanWarMode>('saved-first');
   const [result, setResult] = useState<CWResponse | null>(null);
   const [displayLimit, setDisplayLimit] = useState(1);
 
@@ -87,21 +84,6 @@ const ClanWarRecommend: React.FC = () => {
 
   const hasActiveFilter = includeCards.length > 0 || excludeCards.length > 0 || selectedSavedDeckIds.length > 0;
 
-  useEffect(() => {
-    const fetchPlayers = async () => {
-      try {
-        const data = await getPlayers();
-        setPlayers(data);
-        if (data.length > 0) {
-          const initialPlayer = data.find(player => player.name === requestedPlayer) || data[0];
-          setSelectedPlayer(initialPlayer.name);
-        }
-      } catch (err) {
-        console.error(err);
-      }
-    };
-    fetchPlayers();
-  }, []);
 
   useEffect(() => () => recommendationRequest.current?.abort(), []);
 
@@ -195,6 +177,7 @@ const ClanWarRecommend: React.FC = () => {
         excludeCards.length > 0 ? excludeCards : undefined,
         selectedSavedDeckIds.length > 0 ? selectedSavedDeckIds : undefined,
         request.signal,
+        mode,
       );
       if (request.signal.aborted) return;
       if (data && data.combinations) {
@@ -334,14 +317,21 @@ const ClanWarRecommend: React.FC = () => {
         isDark ? 'bg-gray-800' : 'bg-white'
       }`}>
         <div className="flex flex-wrap items-end gap-4">
-          <ProfileSwitcher profiles={players} value={selectedPlayer} className="flex-1 min-w-[200px]" onChange={name => {
-            recommendationRequest.current?.abort();
-            setSelectedPlayer(name);
-            clearDeckSelection();
-            setResult(null);
-            setError('');
-            setLoading(false);
-          }} />
+          {selectedPlayer && <p className="text-sm">Аккаунт <strong>{selectedPlayer}</strong></p>}
+          <label className="flex flex-col gap-1 text-sm font-medium">
+            Режим подбора
+            <select value={mode} className="rounded border p-2 dark:border-gray-600 dark:bg-gray-700"
+              onChange={event => {
+                recommendationRequest.current?.abort();
+                setMode(event.target.value as ClanWarMode);
+                setLoading(false);
+                setResult(null);
+              }}>
+              <option value="saved-first">Приоритет моим колодам</option>
+              <option value="best">Лучший набор</option>
+            </select>
+          </label>
+          <p className="w-full text-sm">Обязательные карты могут быть в разных колодах одной связки.</p>
           <div>
             <label className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
               Кол-во связок
@@ -463,77 +453,15 @@ const ClanWarRecommend: React.FC = () => {
             exit={{ opacity: 0 }}
             className="space-y-4"
           >
-            {/* Блок с предупреждениями */}
-            {(() => {
-              const { foundSize, totalCombinations, combinations } = result;
-              if (foundSize === 0 || totalCombinations === 0 || combinations.length === 0) {
-                return (
-                  <motion.div
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className={`p-4 rounded-lg flex items-start gap-3 ${
-                      isDark ? 'bg-yellow-900/30 text-yellow-300' : 'bg-yellow-100 text-yellow-700'
-                    }`}
-                  >
-                    <ExclamationTriangleIcon className="w-5 h-5 flex-shrink-0 mt-0.5" />
-                    <div>
-                      ⚠️ У вас недостаточно карт для клановых войн. Получите новые карты и возвращайтесь!
-                    </div>
-                  </motion.div>
-                );
-              }
-              if (foundSize < 4) {
-                return (
-                  <motion.div
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className={`p-4 rounded-lg flex flex-wrap items-center justify-between gap-3 ${
-                      isDark ? 'bg-yellow-900/30 text-yellow-300' : 'bg-yellow-100 text-yellow-700'
-                    }`}
-                  >
-                    <span className="flex items-center gap-2">
-                      <ExclamationTriangleIcon className="w-5 h-5" />
-                      ⚠️ В связках всего {foundSize} колод, а должно быть 4. Создайте новые колоды, чтобы увеличить варианты.
-                    </span>
-                    <Link
-                      to="/decks/new"
-                      className={`flex items-center gap-1 font-medium transition-colors ${
-                        isDark ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-800'
-                      }`}
-                    >
-                      <PlusCircleIcon className="w-4 h-4" />
-                      Добавить колоды →
-                    </Link>
-                  </motion.div>
-                );
-              }
-              if (totalCombinations < 5) {
-                return (
-                  <motion.div
-                    initial={{ opacity: 0, y: -10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className={`p-4 rounded-lg flex flex-wrap items-center justify-between gap-3 ${
-                      isDark ? 'bg-yellow-900/30 text-yellow-300' : 'bg-yellow-100 text-yellow-700'
-                    }`}
-                  >
-                    <span className="flex items-center gap-2">
-                      <ExclamationTriangleIcon className="w-5 h-5" />
-                      ⚠️ Найдено только {totalCombinations} связки. Для большего выбора добавьте новые колоды.
-                    </span>
-                    <Link
-                      to="/decks/new"
-                      className={`flex items-center gap-1 font-medium transition-colors ${
-                        isDark ? 'text-blue-400 hover:text-blue-300' : 'text-blue-600 hover:text-blue-800'
-                      }`}
-                    >
-                      <PlusCircleIcon className="w-4 h-4" />
-                      Добавить колоды →
-                    </Link>
-                  </motion.div>
-                );
-              }
-              return null;
-            })()}
+            {result.message && (
+              <div role="status" className="rounded-lg bg-yellow-100 p-4 text-yellow-900 dark:bg-yellow-900/30 dark:text-yellow-300">
+                <p className="font-semibold">
+                  {result.foundSize ? `Можно сыграть сейчас: ${result.foundSize} из 4 колод` : 'Готовой связки с этими условиями нет'}
+                </p>
+                <p>{result.message}</p>
+                {result.suggestions?.map(suggestion => <p key={suggestion}>{suggestion}</p>)}
+              </div>
+            )}
 
             {/* Сводка */}
             {result.combinations.length > 0 && (

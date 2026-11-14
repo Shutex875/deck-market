@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { getAdminOverview, type AdminOverview } from '../api';
+import { getAdminOverview, setAdminRole, type AdminOverview } from '../api';
 
 const counters = [
   ['users', 'Пользователи'],
@@ -11,11 +11,29 @@ const counters = [
 const dateFormat = new Intl.DateTimeFormat('ru', { dateStyle: 'medium' });
 const control = 'rounded-md border border-gray-300 px-3 py-2 text-sm hover:bg-gray-100 disabled:opacity-40 dark:border-gray-600 dark:hover:bg-gray-700';
 
-export default function AdminPanel() {
+export default function AdminPanel({ canChangeRoles }: { canChangeRoles: boolean }) {
   const [page, setPage] = useState(1);
   const [refresh, setRefresh] = useState(0);
   const [data, setData] = useState<AdminOverview | null>(null);
   const [error, setError] = useState(false);
+  const [savingRole, setSavingRole] = useState(false);
+  const [roleError, setRoleError] = useState('');
+
+  async function changeRole(id: string, role: 'user' | 'admin') {
+    setSavingRole(true);
+    setRoleError('');
+    try {
+      await setAdminRole(id, role);
+      setData(current => current && {
+        ...current,
+        accounts: current.accounts.map(account => account.id === id ? { ...account, isAdmin: role === 'admin' } : account),
+      });
+    } catch {
+      setRoleError('Не удалось изменить роль. Обновите список и попробуйте снова.');
+    } finally {
+      setSavingRole(false);
+    }
+  }
 
   useEffect(() => {
     const request = new AbortController();
@@ -36,11 +54,12 @@ export default function AdminPanel() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">Админ-панель</h1>
         <div className="flex flex-wrap gap-2">
-          <button type="button" className={control} onClick={() => setRefresh(value => value + 1)}>Обновить</button>
+          <button type="button" className={control} disabled={savingRole} onClick={() => setRefresh(value => value + 1)}>Обновить</button>
           <Link to="/decks" className={control}>Открыть каталог</Link>
           <Link to="/decks/new" className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700">Добавить мета-колоду</Link>
         </div>
       </div>
+      {roleError && <p role="alert">{roleError}</p>}
       {error ? <p role="alert">Не удалось загрузить панель. Нажмите «Обновить».</p>
         : !data ? <p role="status">Загрузка…</p>
           : <>
@@ -66,7 +85,16 @@ export default function AdminPanel() {
                     {data.accounts.map(account => (
                       <tr key={account.id} className="border-t border-gray-200 dark:border-gray-700">
                         <th scope="row" className="p-2 font-medium">{account.username}</th>
-                        <td className="p-2">{account.isOwner ? 'Владелец каталога' : 'Пользователь'}</td>
+                        <td className="p-2">
+                          {canChangeRoles && !account.isOwner ? (
+                            <select aria-label={`Роль ${account.username}`} className={`${control} bg-white dark:bg-gray-800`}
+                              disabled={savingRole} value={account.isAdmin ? 'admin' : 'user'}
+                              onChange={event => void changeRole(account.id, event.target.value === 'admin' ? 'admin' : 'user')}>
+                              <option value="user">Пользователь</option>
+                              <option value="admin">Администратор</option>
+                            </select>
+                          ) : account.isOwner ? 'Владелец каталога' : account.isAdmin ? 'Администратор' : 'Пользователь'}
+                        </td>
                         <td className="p-2 tabular-nums">{account.profiles}</td>
                         <td className="p-2"><time dateTime={account.createdAt}>{dateFormat.format(new Date(account.createdAt))}</time></td>
                       </tr>
@@ -76,9 +104,9 @@ export default function AdminPanel() {
               </div>
               {data.pageCount > 1 && (
                 <nav aria-label="Страницы списка пользователей" className="mt-4 flex flex-wrap items-center gap-3">
-                  <button type="button" className={control} disabled={page === 1} onClick={() => setPage(page - 1)}>Назад</button>
+                  <button type="button" className={control} disabled={savingRole || page === 1} onClick={() => setPage(page - 1)}>Назад</button>
                   <span>Страница {page} из {data.pageCount}</span>
-                  <button type="button" className={control} disabled={page === data.pageCount} onClick={() => setPage(page + 1)}>Дальше</button>
+                  <button type="button" className={control} disabled={savingRole || page === data.pageCount} onClick={() => setPage(page + 1)}>Дальше</button>
                 </nav>
               )}
             </section>

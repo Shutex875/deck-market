@@ -24,12 +24,15 @@ api.interceptors.response.use(undefined, error => {
 
 export interface AdminOverview {
   totals: { users: number; players: number; metaDecks: number; savedDecks: number };
-  accounts: { id: string; username: string; createdAt: string; profiles: number; isOwner: boolean }[];
+  accounts: { id: string; username: string; createdAt: string; profiles: number; isOwner: boolean; isAdmin: boolean }[];
   pageCount: number;
 }
 
 export const getAdminOverview = (page: number, signal: AbortSignal) =>
   api.get<AdminOverview>('/admin/overview', { params: { page }, signal }).then(res => res.data);
+
+export const setAdminRole = (id: string, role: 'user' | 'admin') =>
+  api.patch(`/admin/users/${encodeURIComponent(id)}/role`, { role });
 
 // === Типы ===
 export interface Player {
@@ -41,6 +44,16 @@ export interface Player {
   heroes: string;
   createdAt: string;
   updatedAt: string;
+  collectionCheckedAt?: string | null;
+  collectionPreview?: CollectionPreview | null;
+}
+
+export interface CollectionPreview {
+  id: string;
+  partial: boolean;
+  levels: { card: string; from: number; to: number }[];
+  evolutions: string[];
+  heroes: string[];
 }
 
 export interface ClashRoyalePlayerStats {
@@ -103,9 +116,24 @@ export const getClashRoyalePlayerStats = (playerTag: string) => {
     .then(res => res.data);
 };
 
-export interface MetaDeck {
+export const metaDataLabels = {
+  'match-stats': 'Статистика матчей',
+  'manual-tier': 'Ручной тир',
+  'top-ladder': 'Пример с Top Ladder',
+  example: 'Демонстрационные данные',
+} as const;
+
+export interface MetaDeckProvenance {
+  dataKind?: keyof typeof metaDataLabels | null;
+  gameMode?: string | null;
+  dataDate?: string | null;
+  sampleSize?: number | null;
+}
+
+export interface MetaDeck extends MetaDeckProvenance {
   id: string;
   name: string;
+  addedByUsername?: string | null;
   cards: string;
   description?: string | null;
   avgElixir: number | null;
@@ -128,8 +156,8 @@ export interface RecommendResponse {
     id: string;
     name: string;
     cards: string[];
-    cardLevels: Record<string, number>;
-    averageLevel: number;
+    cardLevels: Record<string, number | null>;
+    averageLevel: number | null;
     missingCardsCount: number;
     score: number;
     bonus: number;
@@ -144,15 +172,26 @@ export interface RecommendResponse {
   playerName: string;
 }
 
+export interface UpgradeDetail {
+  card: string;
+  rarity: string | null;
+  currentLevel: number;
+  neededGold: number;
+  neededCards: number;
+  steps: { level: number; gold: number; copies: number }[];
+}
+
 export interface DiagnoseResponse {
   success: boolean;
   playerName: string;
   targetLevel: number;
   totalGold: number;
-  details: { card: string; currentLevel: number; neededGold: number }[];
+  details: UpgradeDetail[];
 }
 
 // === CW Response ===
+export type ClanWarMode = 'saved-first' | 'best';
+
 export interface CWResponse {
   success: boolean;
   combinations: {
@@ -176,6 +215,7 @@ export interface CWResponse {
   foundSize: number;
   playerName: string;
   message?: string;
+  suggestions?: string[];
 }
 
 // === Saved Decks ===
@@ -199,27 +239,39 @@ export const transferSavedDeck = (id: string, fromPlayer: string, toPlayer: stri
 export const deleteSavedDeck = (id: string, playerName: string) =>
   api.delete(`/saved-decks/${id}`, { params: { playerName } }).then(res => res.data);
 
-export const diagnoseDeck = (playerName: string, deckId: string, signal?: AbortSignal) =>
+export const diagnoseDeck = (playerName: string, deckId: string, signal?: AbortSignal, targetLevel?: number) =>
   api.post<{
     success: boolean;
     deckName: string;
     totalGold: number;
     targetLevel: number;
-    details: { card: string; currentLevel: number; neededGold: number }[];
-  }>('/diagnose-deck', { playerName, deckId }, { signal }).then(res => res.data);
+    details: UpgradeDetail[];
+  }>('/diagnose-deck', { playerName, deckId, targetLevel }, { signal }).then(res => res.data);
 
 // === Player API ===
 const players = createCachedRead(() => api.get<Player[]>('/players').then(res => res.data));
 onSessionChanged(players.invalidate);
 export const getPlayers = players.read;
+function notifyPlayersChanged() {
+  players.invalidate();
+  window.dispatchEvent(new Event('bastdecks:players-changed'));
+}
+export const refreshPlayers = () => {
+  players.invalidate();
+  return getPlayers();
+};
+export const checkPlayerCollection = (id: string) =>
+  api.post(`/players/${encodeURIComponent(id)}/collection/check`);
+export const applyPlayerCollection = (id: string, previewId: string) =>
+  api.post(`/players/${encodeURIComponent(id)}/collection/apply`, { previewId }).then(notifyPlayersChanged);
 export const getPlayer = (name: string, signal?: AbortSignal) =>
   api.get<Player>(`/players/${encodeURIComponent(name)}`, { signal }).then(res => res.data);
 export const savePlayer = (data: Omit<Player, 'id' | 'createdAt' | 'updatedAt'>, existingName?: string) =>
   (existingName ? api.put(`/players/${encodeURIComponent(existingName)}`, data) : api.post<Player>('/players', data)).then(() => {
-    players.invalidate();
+    notifyPlayersChanged();
   });
 export const deletePlayer = (name: string) => api.delete(`/players/${encodeURIComponent(name)}`).then(res => {
-  players.invalidate();
+  notifyPlayersChanged();
   return res.data;
 });
 
@@ -228,7 +280,7 @@ export type MetaDeckSortBy = 'name' | 'createdAt' | 'avgElixir';
 export type SortOrder = 'asc' | 'desc';
 export const getMetaDecks = (sortBy: MetaDeckSortBy = 'name', order: SortOrder = 'asc') =>
   api.get<MetaDeckFull[]>('/meta-decks', { params: { sortBy, order } }).then(res => res.data);
-export const createMetaDeck = (data: {
+export const createMetaDeck = (data: MetaDeckProvenance & {
   name: string;
   cards: string[];
   description?: string;
@@ -315,7 +367,7 @@ export interface MetaDeckFull extends MetaDeck {
 export const getMetaDeck = (id: string) =>
   api.get<MetaDeckFull>(`/meta-decks/${id}`).then(res => res.data);
 
-export const updateMetaDeck = (id: string, data: {
+export const updateMetaDeck = (id: string, data: MetaDeckProvenance & {
   name: string;
   cards: string[];
   description?: string;
@@ -387,6 +439,7 @@ export const recommendCW = (
   excludeCards?: string[],
   requiredDeckIds?: string[],
   signal?: AbortSignal,
+  mode: ClanWarMode = 'saved-first',
 ) =>
   api.post<CWResponse>('/recommend-cw', {
     playerName,
@@ -394,6 +447,7 @@ export const recommendCW = (
     includeCards,
     excludeCards,
     requiredDeckIds,
+    mode,
   }, { signal }).then(res => res.data);
 
 export const diagnose = (playerName: string, targetLevel = 13) =>

@@ -30,6 +30,8 @@ import {
 
 import {
   createMetaDeck,
+  metaDataLabels,
+  type MetaDeckProvenance,
   updateMetaDeck,
   deleteMetaDeck,
   getMetaDeck,
@@ -257,6 +259,10 @@ const DeckBuilder: React.FC = () => {
   const [name, setName] = useState(navigationState?.prefillName || '');
   const [tier, setTier] = useState('');
   const [winRate, setWinRate] = useState('');
+  const [dataKind, setDataKind] = useState<NonNullable<MetaDeckProvenance['dataKind']> | ''>('');
+  const [gameMode, setGameMode] = useState('');
+  const [dataDate, setDataDate] = useState('');
+  const [sampleSize, setSampleSize] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [sourceId, setSourceId] = useState('');
   const [sourceUrl, setSourceUrl] = useState('');
@@ -337,7 +343,11 @@ const DeckBuilder: React.FC = () => {
           setDeckId(deck.id);
           setName(deck.name);
           setTier(deck.tier || '');
-          setWinRate(deck.winRate ? String(deck.winRate) : '');
+          setWinRate(deck.winRate == null ? '' : String(deck.winRate));
+          setDataKind(deck.dataKind ?? '');
+          setGameMode(deck.gameMode ?? '');
+          setDataDate(deck.dataDate ?? '');
+          setSampleSize(deck.sampleSize == null ? '' : String(deck.sampleSize));
           setCategoryId(deck.categoryId);
           setSourceId(deck.sourceId);
           setSourceUrl(deck.sourceUrl || '');
@@ -677,7 +687,11 @@ const DeckBuilder: React.FC = () => {
         cards: slots.filter((id): id is string => id !== null),
         slot2Type: slot2Type || undefined,
         tier: tier || undefined,
-        winRate: winRate ? parseFloat(winRate) : undefined,
+        winRate: winRate ? Number(winRate) : undefined,
+        dataKind: dataKind || (tier && !winRate ? 'manual-tier' as const : null),
+        gameMode: gameMode.trim() || null,
+        dataDate: dataDate || null,
+        sampleSize: sampleSize ? Number(sampleSize) : null,
         categoryId,
         sourceId,
         sourceUrl: sourceUrl || undefined,
@@ -850,7 +864,9 @@ const DeckBuilder: React.FC = () => {
             </label>
             <input
               type="number"
-              step="0.1"
+              step="any"
+              min={0}
+              max={100}
               value={winRate}
               onChange={(e) => setWinRate(e.target.value)}
               className={`w-full rounded px-3 py-2 transition-colors duration-200 ${
@@ -861,6 +877,32 @@ const DeckBuilder: React.FC = () => {
               placeholder="52.5"
             />
           </div>
+        </div>
+
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <label className="flex flex-col gap-1">
+            Тип данных
+            <select className="rounded border p-2 dark:bg-gray-700" value={dataKind}
+              onChange={event => setDataKind(event.target.value as typeof dataKind)}>
+              <option value="">Не указан</option>
+              {Object.entries(metaDataLabels).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            Режим
+            <input className="rounded border p-2 dark:bg-gray-700" value={gameMode} maxLength={80}
+              onChange={event => setGameMode(event.target.value)} />
+          </label>
+          <label className="flex flex-col gap-1">
+            Дата данных
+            <input className="rounded border p-2 dark:bg-gray-700" type="date" value={dataDate}
+              onChange={event => setDataDate(event.target.value)} />
+          </label>
+          <label className="flex flex-col gap-1">
+            Выборка (число матчей)
+            <input className="rounded border p-2 dark:bg-gray-700" type="number" min={1} max={2147483647}
+              value={sampleSize} onChange={event => setSampleSize(event.target.value)} />
+          </label>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">

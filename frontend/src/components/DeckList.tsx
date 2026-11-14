@@ -1,3 +1,4 @@
+import { useActivePlayer } from '../context/ActivePlayer';
 import ProfileSwitcher from './ProfileSwitcher';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
@@ -20,7 +21,7 @@ import {
   PhotoIcon,
   ArrowUpTrayIcon,
 } from '@heroicons/react/24/outline';
-import { getMetaDecks, deleteMetaDeck, getCategories, Category, getPlayers, saveDeck, transferSavedDeck, deleteSavedDeck, Player, checkDeckDuplicates, recognizeDeckScreenshot, RecognizedDeckCard, MetaDeckSortBy, SortOrder, importMockDecks, type MetaDeckFull } from '../api';
+import { metaDataLabels, getMetaDecks, deleteMetaDeck, getCategories, Category, saveDeck, transferSavedDeck, deleteSavedDeck, checkDeckDuplicates, recognizeDeckScreenshot, RecognizedDeckCard, MetaDeckSortBy, SortOrder, importMockDecks, type MetaDeckFull } from '../api';
 import { CardIcon } from '../utils/cardImages';
 import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
@@ -41,7 +42,7 @@ function parseDeckCards(value: string): string[] {
 
 const deckComposition = (cards: string[]) => JSON.stringify([...cards].sort());
 
-const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog }) => {
+const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ canManageCatalog, latest = false }) => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
   const navigate = useNavigate();
@@ -54,8 +55,8 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
   const [sourceFilter, setSourceFilter] = useState('');
   const [tierFilter, setTierFilter] = useState('');
   const [favoritesOnly, setFavoritesOnly] = useState(false);
-  const [sortBy, setSortBy] = useState<MetaDeckSortBy>('name');
-  const [sortOrder, setSortOrder] = useState<SortOrder>('asc');
+  const [sortBy, setSortBy] = useState<MetaDeckSortBy>(latest ? 'createdAt' : 'name');
+  const [sortOrder, setSortOrder] = useState<SortOrder>(latest ? 'desc' : 'asc');
   const [loading, setLoading] = useState(true);
   const [importing, setImporting] = useState(false);
   const [importNotice, setImportNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -84,8 +85,9 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
   const [isFilterModalOpen, setIsFilterModalOpen] = useState(false);
 
   // Состояния для сохранения в избранное
-  const [players, setPlayers] = useState<Player[]>([]);
-  const [selectedPlayerName, setSelectedPlayerName] = useState<string>('');
+  const { players, activePlayer } = useActivePlayer();
+  const selectedPlayerName = activePlayer?.name ?? '';
+  const levels: Record<string, number> = useMemo(() => JSON.parse(activePlayer?.levels ?? '{}'), [activePlayer?.levels]);
   const saved = useSavedDecks(selectedPlayerName);
   const savedDecks = saved.decks;
   const [isSaveModalOpen, setIsSaveModalOpen] = useState(false);
@@ -118,26 +120,18 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
     }
   };
 
-  const fetchPlayers = async () => {
-    try {
-      const data = await getPlayers();
-      setPlayers(data);
-      if (data.length > 0) {
-        setSelectedPlayerName(data[0].name);
-      }
-    } catch (error) {
-      console.error(error);
-    }
-  };
-
   useEffect(() => {
     fetchCategories();
-    fetchPlayers();
   }, []);
 
   useEffect(() => {
     fetchDecks();
   }, [sortBy, sortOrder]);
+
+  useEffect(() => {
+    setIsSaveModalOpen(false);
+    setSaveNotice('');
+  }, [activePlayer?.id]);
 
   useEffect(() => {
     if (!screenshotUrl) return;
@@ -330,7 +324,6 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
       } else {
         await saveDeck(targetPlayer, savingDeck.name, savingDeck.cards);
       }
-      setSelectedPlayerName(targetPlayer);
       saved.reload();
       setIsSaveModalOpen(false);
       setSavingDeck(null);
@@ -430,15 +423,15 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
     <div className={`transition-colors duration-200 ${isDark ? 'text-gray-200' : 'text-gray-900'}`}>
       <div className="flex flex-wrap justify-between items-center mb-4 gap-2">
         <div>
-          <h2 className="text-2xl font-bold">Мета-колоды</h2>
+          <h2 className="text-2xl font-bold">{latest ? 'Новые колоды' : 'Мета-колоды'}</h2>
           {decks && <p className="text-sm text-gray-600 dark:text-gray-400">Всего колод: {decks.length}</p>}
-          <div className="mt-2">
-            {players.length === 1 ? (
-              <p className="text-sm">Игровой аккаунт: <strong>{selectedPlayerName}</strong></p>
-            ) : (
-              <ProfileSwitcher profiles={players} value={selectedPlayerName} onChange={setSelectedPlayerName} />
-            )}
-          </div>
+          {activePlayer && (
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+              <span>Готовность и избранное для <strong>{selectedPlayerName}</strong></span>
+              <Link className="text-blue-700 underline dark:text-blue-300" to={`/recommend?player=${encodeURIComponent(selectedPlayerName)}`}>Подобрать под аккаунт</Link>
+              <Link className="text-blue-700 underline dark:text-blue-300" to={`/my-decks?player=${encodeURIComponent(selectedPlayerName)}`}>В мои колоды</Link>
+            </div>
+          )}
         </div>
         {canManageCatalog && (
         <div className="flex flex-wrap gap-2">
@@ -609,6 +602,10 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
           >
             {filteredDecks.map((deck, deckIndex) => {
               const { cards } = deck;
+              const missingCards = cards.filter(card => {
+                const alias = card === 'Log' ? 'The Log' : card === 'The Log' ? 'Log' : card;
+                return !((levels[card] ?? levels[alias]) > 0);
+              }).length;
               const slot2TypeFromDeck = deck.slot2Type;
               const saved = cards.length === 8 && savedCompositions.has(deck.composition);
               return (
@@ -630,7 +627,8 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
                             : isDark ? 'text-gray-400 hover:bg-gray-600' : 'text-gray-400 hover:bg-gray-100'
                         }`}
                         aria-label={saved ? 'Управлять сохранённой колодой' : 'Сохранить в избранное'}
-                        title={saved ? `Сохранено на «${selectedPlayerName}»` : 'Сохранить в избранное'}
+                        title={saved ? `Сохранено на «${selectedPlayerName}»`
+                          : selectedPlayerName ? `Сохранить на «${selectedPlayerName}»` : 'Сохранить в избранное'}
                       >
                         <BookmarkIcon className={`w-5 h-5 ${saved ? 'fill-current' : ''}`} />
                       </button>
@@ -667,18 +665,27 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
                       Категория: {deck.category?.name || '—'}
                     </span>
                     <span>Источник: {deck.source?.name || '—'}</span>
+                    <span>{deck.dataKind ? metaDataLabels[deck.dataKind] : 'Тип данных не указан'}</span>
+                    <span>Режим: {deck.gameMode || 'не указан'}</span>
+                    {deck.dataDate ? (
+                      <span>Дата данных: <time dateTime={deck.dataDate}>{deck.dataDate.split('-').reverse().join('.')}</time></span>
+                    ) : (
+                      <span>Добавлена: <time dateTime={deck.createdAt}>{new Date(deck.createdAt).toLocaleDateString('ru-RU')}</time></span>
+                    )}
                     {deck.tier && (
                       <span className="flex items-center gap-1">
                         <TrophyIcon className="w-3 h-3" />
                         Тир: {deck.tier}
                       </span>
                     )}
-                    {deck.winRate && (
+                    {deck.addedByUsername && <span>Добавил: {deck.addedByUsername}</span>}
+                    {deck.winRate != null && (
                       <span className="flex items-center gap-1">
                         <ChartBarIcon className="w-3 h-3" />
                         Винрейт: {deck.winRate}%
                       </span>
                     )}
+                    {deck.sampleSize != null && <span>Матчей в выборке: {deck.sampleSize.toLocaleString('ru-RU')}</span>}
                     {typeof deck.avgElixir === 'number' && (
                       <span title="Средняя стоимость эликсира" className="rounded-full bg-blue-100 px-2 py-0.5 font-semibold text-blue-700 dark:bg-blue-900/50 dark:text-blue-200">
                         {deck.avgElixir.toFixed(1)} 💧
@@ -686,6 +693,12 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
                     )}
                   </div>
 
+                  {activePlayer && cards.length === 8 && (
+                    <p className={`mt-2 text-xs font-medium ${missingCards
+                      ? 'text-orange-700 dark:text-orange-300' : 'text-green-700 dark:text-green-300'}`}>
+                      {missingCards ? `Не хватает карт: ${missingCards} из 8` : 'Все карты доступны'}
+                    </p>
+                  )}
                   <div className="mt-auto pt-3">
                     <div className="mx-auto grid w-full max-w-[19rem] grid-cols-4 gap-1.5 lg:max-w-none lg:grid-cols-8">
                       {cards.map((card, index) => (
@@ -952,6 +965,7 @@ const DeckList: React.FC<{ canManageCatalog: boolean }> = ({ canManageCatalog })
                       {sourceDeck && <>. Сохранена на «{selectedPlayerName}».</>}
                     </Dialog.Description>
                     <fieldset disabled={Boolean(saveLoading)}>
+                      {players.length === 1 && <p>Аккаунт <strong>{targetPlayer}</strong></p>}
                       <ProfileSwitcher profiles={players} value={targetPlayer} onChange={name => {
                         setTargetPlayer(name);
                         setSaveError('');

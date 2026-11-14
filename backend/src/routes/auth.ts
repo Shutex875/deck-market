@@ -16,15 +16,16 @@ const profileUpdate = z.object({
   currentPassword: password,
   newPassword: password.optional(),
 });
-const publicUser = { id: true, username: true } as const;
+const publicUser = { id: true, username: true, isAdmin: true } as const;
 
-function sessionUser(user: { id: string; username: string }) {
-  return { id: user.id, username: user.username, canManageCatalog: user.id === process.env.CATALOG_OWNER_ID };
+function sessionUser(user: { id: string; username: string; isAdmin: boolean }) {
+  const isOwner = user.id === process.env.CATALOG_OWNER_ID;
+  return { id: user.id, username: user.username, isOwner, canManageCatalog: isOwner || user.isAdmin === true };
 }
 
 export const requireCatalogOwner: RequestHandler = (_req, res, next) => {
   if (res.locals.user?.canManageCatalog !== true) {
-    return res.status(403).json({ error: 'Изменять общий каталог может только его владелец' });
+    return res.status(403).json({ error: 'Требуются права администратора' });
   }
   next();
 };

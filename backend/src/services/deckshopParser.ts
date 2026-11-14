@@ -12,6 +12,8 @@ interface DeckshopDeck {
   cards: string[];
   tier: string | null;
   winRate: number | null;
+  sampleSize: number | null;
+  gameMode: string | null;
 }
 
 export function parseDeckshopDecks(html: string): DeckshopDeck[] {
@@ -29,12 +31,17 @@ export function parseDeckshopDecks(html: string): DeckshopDeck[] {
       });
       if (cards.length !== 8) return;
 
-      const winRate = Number.parseFloat(deck.find('.win-rate, .winrate, .percentage').first().text().trim());
+      const winRate = Number.parseFloat(deck.find('.win-rate, .winrate').first().text().trim().replace(',', '.'));
+      const sample = deck.attr('data-sample-size') ?? deck.attr('data-battle-count') ??
+        deck.find('.sample-size, .battle-count, .match-count').first().text().trim();
+      const sampleSize = /^\d+(?:[\s,]\d{3})*$/.test(sample) ? Number(sample.replace(/[\s,]/g, '')) : null;
       decks.push({
         name: deck.find('.deck-name, .title, h4, h5').first().text().trim() || `Колода ${index + 1}`,
         cards,
         tier: deck.find('.tier, .deck-tier, .badge').first().text().trim() || null,
-        winRate: Number.isFinite(winRate) ? winRate : null,
+        winRate: winRate >= 0 && winRate <= 100 ? winRate : null,
+        sampleSize: sampleSize !== null && sampleSize > 0 && sampleSize <= 2147483647 ? sampleSize : null,
+        gameMode: deck.attr('data-game-mode')?.trim().slice(0, 80) || null,
       });
     });
     if (decks.length > 0) return decks;

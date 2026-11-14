@@ -3,6 +3,7 @@ import axios from 'axios';
 import type { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { userId } from './auth';
+import { checkCollection, CollectionCheckError, readCollectionPreview } from '../services/collectionSync';
 
 function storedJson(schema: z.ZodType) {
   return z.string().refine(value => {
@@ -86,7 +87,7 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
         where: { ownerId: userId(res) },
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       });
-      res.json(players);
+      res.json(players.map(player => ({ ...player, collectionPreview: readCollectionPreview(player) })));
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: 'Failed to fetch players' });
@@ -113,11 +114,59 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
   router.put('/players/:name', async (req, res) => {
     const parsed = profileData.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'Некорректные данные аккаунта' });
+    const where = { name: req.params.name, ownerId: userId(res) };
+    const existing = await prisma.player.findFirst({ where, select: { tag: true } });
+    if (!existing) return res.status(404).json({ error: 'Player not found' });
+    const changedTag = parsed.data.tag !== undefined && parsed.data.tag !== existing.tag;
     const { count } = await prisma.player.updateMany({
-      where: { name: req.params.name, ownerId: userId(res) },
-      data: parsed.data,
+      where: { ...where, tag: existing.tag },
+      data: {
+        ...parsed.data,
+        ...(changedTag && { collectionCheckedAt: null, collectionCheckAttemptAt: null, collectionPreview: null }),
+      },
     });
-    if (!count) return res.status(404).json({ error: 'Player not found' });
+    if (!count) return res.status(409).json({ error: 'Игровой профиль изменился. Откройте его заново' });
+    res.json({ success: true });
+  });
+
+  router.post('/players/:id/collection/check', async (req, res) => {
+    try {
+      const player = await prisma.player.findFirst({ where: { id: req.params.id, ownerId: userId(res) } });
+      if (!player) return res.status(404).json({ error: 'Профиль не найден' });
+      await checkCollection(prisma, player);
+      res.json({ success: true });
+    } catch (error) {
+      if (error instanceof CollectionCheckError) return res.status(error.status).json({ error: error.message });
+      if (axios.isAxiosError(error) && error.response?.status === 404) {
+        return res.status(404).json({ error: 'Игровой профиль с таким тегом не найден' });
+      }
+      res.status(502).json({ error: 'Не удалось проверить коллекцию через API Clash Royale' });
+    }
+  });
+
+  router.post('/players/:id/collection/apply', async (req, res) => {
+    const where = { id: req.params.id, ownerId: userId(res) };
+    const player = await prisma.player.findFirst({ where });
+    if (!player) return res.status(404).json({ error: 'Профиль не найден' });
+    const preview = readCollectionPreview(player);
+    if (!preview || preview.id !== req.body?.previewId) {
+      return res.status(409).json({ error: 'Предпросмотр изменился. Проверьте новый список обновлений' });
+    }
+    const levels: Record<string, number> = JSON.parse(player.levels);
+    for (const { card, to } of preview.levels) levels[card] = to;
+    const merge = (stored: string, additions: string[]) =>
+      JSON.stringify([...new Set([...JSON.parse(stored) as string[], ...additions])]);
+    const { count } = await prisma.player.updateMany({
+      where: {
+        ...where, tag: player.tag, levels: player.levels, evolutions: player.evolutions,
+        heroes: player.heroes, collectionPreview: player.collectionPreview,
+      },
+      data: {
+        levels: JSON.stringify(levels), evolutions: merge(player.evolutions, preview.evolutions),
+        heroes: merge(player.heroes, preview.heroes), collectionPreview: null,
+      },
+    });
+    if (!count) return res.status(409).json({ error: 'Профиль изменился. Проверьте обновления ещё раз' });
     res.json({ success: true });
   });
   
