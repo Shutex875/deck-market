@@ -1,11 +1,19 @@
 import { useState } from 'react';
 import { isAxiosError } from 'axios';
-import { applyPlayerCollection, checkPlayerCollection, type Player } from '../api';
+import { applyPlayerCollection, checkPlayerCollection, setCollectionAutoCheck, type Player } from '../api';
 
 export default function CollectionSync({ player, refresh }: { player: Player; refresh: () => Promise<void> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const preview = player.collectionPreview;
+  const attemptedAt = player.collectionCheckAttemptAt;
+  const running = player.collectionCheckStatus === 'running' && attemptedAt &&
+    Date.now() - Date.parse(attemptedAt) < 60_000;
+  const status = running ? 'Проверка идёт'
+    : player.collectionCheckStatus === 'success' ? 'Успешно'
+    : player.collectionCheckStatus === 'error' ? player.collectionCheckError ?? 'Проверка не удалась'
+    : player.collectionCheckStatus === 'running' ? 'Проверка прервалась'
+    : 'Результат неизвестен';
 
   async function run(action: () => Promise<unknown>) {
     setBusy(true);
@@ -17,8 +25,7 @@ export default function CollectionSync({ player, refresh }: { player: Player; re
         ? error.response?.data.error || 'Не удалось обновить данные коллекции'
         : 'Не удалось обновить данные коллекции');
     } finally {
-      await refresh();
-      setBusy(false);
+      try { await refresh(); } finally { setBusy(false); }
     }
   }
 
@@ -26,10 +33,23 @@ export default function CollectionSync({ player, refresh }: { player: Player; re
 
   return (
     <div className="mt-3 space-y-2 text-sm">
-      <button type="button" disabled={busy} onClick={() => void run(() => checkPlayerCollection(player.id))}
+      <button type="button" disabled={busy || Boolean(running)} onClick={() => void run(() => checkPlayerCollection(player.id))}
         className="rounded bg-blue-700 px-2 py-1 text-white hover:bg-blue-800 disabled:opacity-60">
-        {busy ? 'Подождите…' : 'Проверить обновления'}
+        Проверить обновления
       </button>
+      <label className="flex items-center gap-2">
+        <input type="checkbox" checked={player.collectionAutoCheck ?? true} disabled={busy}
+          onChange={event => {
+            const enabled = event.target.checked;
+            void run(() => setCollectionAutoCheck(player.id, enabled));
+          }} />
+        Автопроверка раз в 6 часов
+      </label>
+      <p className="text-xs text-gray-600 dark:text-gray-300">
+        {attemptedAt ? <>Последняя попытка <time dateTime={attemptedAt}>
+          {new Date(attemptedAt).toLocaleString()}
+        </time> · {status}</> : 'Попыток проверки пока нет'}
+      </p>
       <p className="text-xs text-gray-600 dark:text-gray-300">
         {player.collectionCheckedAt
           ? <>Последняя успешная проверка <time dateTime={player.collectionCheckedAt}>
@@ -37,7 +57,7 @@ export default function CollectionSync({ player, refresh }: { player: Player; re
             </time></>
           : 'Успешных проверок пока нет'}
       </p>
-      {error && <p role="alert" className="text-red-700 dark:text-red-300">{error}</p>}
+      {error && error !== player.collectionCheckError && <p role="alert" className="text-red-700 dark:text-red-300">{error}</p>}
       {preview ? (
         <details className="rounded border border-gray-300 p-2 dark:border-gray-600">
           <summary className="cursor-pointer font-medium">Доступны обновления</summary>

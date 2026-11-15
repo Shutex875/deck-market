@@ -42,6 +42,9 @@ model Player {
   gameProgress GameProgress?
   collectionCheckedAt DateTime?
   collectionCheckAttemptAt DateTime?
+  collectionCheckStatus String?
+  collectionCheckError String?
+  collectionAutoCheck Boolean @default(true)
   collectionPreview String?
 
   @@unique([ownerId, name])

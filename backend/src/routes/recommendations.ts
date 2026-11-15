@@ -1,4 +1,5 @@
 import { diagnoseUpgrades, isUpgradeTarget, MAX_UPGRADE_LEVEL } from '../services/upgradeDiagnosis';
+import { planClanWarUpgrade } from '../services/clanWarUpgrade';
 import { Router } from 'express';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { z } from 'zod';
@@ -6,7 +7,7 @@ import { userId } from './auth';
 import { cardDataMap } from '../config/cards';
 import { findClanWarCombinations } from '../services/clanWarCombinations';
 import { calculatePlayerBonus, fixDeckTemplate } from '../services/deckService';
-import { scoreFilteredDeck } from '../services/filteredRecommendations';
+import { compareMetaRecommendations, scoreFilteredDeck } from '../services/filteredRecommendations';
 import { getDeckAvailability } from '../services/deckAvailability';
 
 const cardFilterError = 'Card filters must be arrays of card IDs';
@@ -45,9 +46,17 @@ const recommendationRequest = z.object({
   excludeCards: cardFilter,
 }, { error: 'Request body must be an object' });
 const ordinaryRecommendationRequest = recommendationRequest.extend({
-  mode: z.enum(['account', 'meta']).optional(),
+  mode: z.enum(['account', 'prospective', 'meta']).optional(),
+  targetLevel: z.number().int().min(1).max(MAX_UPGRADE_LEVEL).default(MAX_UPGRADE_LEVEL),
+  metaFilters: z.object({
+    gameMode: z.string().trim().min(1).max(80).optional(),
+    since: z.iso.date().optional(),
+    minSample: z.number().int().min(1).max(2147483647).optional(),
+    dataKind: z.enum(['match-stats', 'manual-tier', 'top-ladder']).optional(),
+  }).optional(),
 });
 const clanWarRequest = recommendationRequest.extend({
+  targetLevel: z.number().int().min(1).max(MAX_UPGRADE_LEVEL).optional(),
   mode: z.enum(['saved-first', 'best']).default('saved-first'),
   requiredDeckIds: z.array(
     z.string({ error: requiredDeckIdsError }),
@@ -69,7 +78,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
     try {
       const parsed = ordinaryRecommendationRequest.safeParse(req.body ?? {});
       if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
-      const { playerName, limit: requestedLimit, includeCards, excludeCards, mode } = parsed.data;
+      const { playerName, limit: requestedLimit, includeCards, excludeCards, mode, targetLevel, metaFilters } = parsed.data;
       const limit = normalizeLimit(requestedLimit, 10);
       const ranking = mode ?? (includeCards.length || excludeCards.length ? 'meta' : 'account');
       const matchesCards = (cards: string[]) =>
@@ -83,22 +92,27 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
       const heroes = JSON.parse(player.heroes);
 
       if (ranking === 'meta') {
+        const { gameMode, since, minSample, dataKind } = metaFilters ?? {};
         const catalog = await prisma.metaDeck.findMany({
+          where: {
+            isActive: true,
+            ...(since && { dataDate: { gte: since } }),
+            ...(minSample !== undefined && { sampleSize: { gte: minSample } }),
+            ...(dataKind && { dataKind }),
+          },
           orderBy: { name: 'asc' },
           include: { category: true, source: true },
         });
         const ownedEvolutions = new Set<string>(evolutions);
         const ownedHeroes = new Set<string>(heroes);
+        const modeQuery = gameMode?.toLowerCase();
         const matches = catalog.flatMap(deck => {
+          if (modeQuery && !deck.gameMode?.toLowerCase().includes(modeQuery)) return [];
           const cards: string[] = JSON.parse(deck.cards);
           if (!matchesCards(cards)) return [];
           return [scoreFilteredDeck(deck, cards, rawLevels, ownedEvolutions, ownedHeroes)];
         });
-        matches.sort((a, b) => {
-          if (a.winRate === null && b.winRate !== null) return 1;
-          if (a.winRate !== null && b.winRate === null) return -1;
-          return b.score - a.score;
-        });
+        matches.sort(compareMetaRecommendations);
         return res.json({ success: true, decks: matches.slice(0, limit), playerName, totalDecks: matches.length });
       }
 
@@ -156,11 +170,18 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         });
       }
 
-      const filtered = scoredDecks.filter(d => d.missingCardsCount <= 2);
+      const filtered = scoredDecks.filter(d => d.cards.length === 8 && new Set(d.cards).size === 8 &&
+        (ranking === 'prospective' || d.missingCardsCount === 0));
       const sorted = filtered.sort((a, b) => b.score - a.score);
       const top = sorted.slice(0, limit);
 
-      res.json({ success: true, decks: top, playerName, totalDecks: filtered.length });
+      const decks = ranking === 'prospective' ? top.map(deck => {
+        const { details, totalGold } = diagnoseUpgrades(deck.cards, rawLevels, targetLevel);
+        return { ...deck, upgrade: {
+          targetLevel, totalGold, neededCopies: details.reduce((sum, card) => sum + card.neededCards, 0),
+        } };
+      }) : top;
+      res.json({ success: true, decks, playerName, totalDecks: filtered.length });
     } catch (error: any) {
       console.error('❌ Ошибка в /api/recommend:', error);
       console.error('Stack:', error.stack);
@@ -172,7 +193,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
     try {
       const parsed = clanWarRequest.safeParse(req.body ?? {});
       if (!parsed.success) return res.status(400).json({ error: parsed.error.issues[0].message });
-      const { playerName, limit: requestedLimit, includeCards, excludeCards, requiredDeckIds, mode } = parsed.data;
+      const { playerName, limit: requestedLimit, includeCards, excludeCards, requiredDeckIds, mode, targetLevel } = parsed.data;
 
       const limit = normalizeLimit(requestedLimit, 5);
 
@@ -214,6 +235,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
           combinations: [],
           totalCombinations: 0,
           message: 'Некоторые выбранные колоды не найдены в сохранённых',
+          upgradePlanBlocker: 'Некоторые закреплённые колоды больше не сохранены.',
           playerName,
         });
       }
@@ -252,7 +274,8 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
       const isReady = (deck: Candidate) => deck.cards.length === 8 && deck.missingCount === 0;
       const passesExclusions = (deck: Candidate) =>
         !deck.cards.some(card => excluded.has(card === 'Log' ? 'The Log' : card));
-      const savedCandidates = savedDecks.map(scoreDeck).filter(isReady);
+      const allSaved = savedDecks.map(scoreDeck);
+      const savedCandidates = allSaved.filter(isReady);
       const pinned = savedCandidates.filter(deck => requiredSet.has(deck.deckId));
       const readySaved = [...pinned, ...savedCandidates.filter(deck => !requiredSet.has(deck.deckId))];
       let bestCombinations = mode === 'saved-first'
@@ -260,12 +283,15 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         : [];
       let message: string | undefined;
       let suggestions: string[] = [];
-      if (!bestCombinations.length) {
-        const metaDecks = await prisma.metaDeck.findMany({
+      const needsReadySearch = !bestCombinations.length;
+      const metaCandidates = needsReadySearch || targetLevel !== undefined
+        ? (await prisma.metaDeck.findMany({
           where: { isActive: true },
           select: { id: true, name: true, cards: true, slot2Type: true },
-        });
-        const ready = [...readySaved, ...metaDecks.filter(deck => !savedIds.has(deck.id)).map(scoreDeck).filter(isReady)];
+        })).filter(deck => !savedIds.has(deck.id)).map(scoreDeck)
+        : [];
+      if (needsReadySearch) {
+        const ready = [...readySaved, ...metaCandidates.filter(isReady)];
         const eligible = ready.filter(passesExclusions);
         bestCombinations = findClanWarCombinations(eligible, requiredSet, limit, 1, requiredCards);
 
@@ -297,6 +323,9 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         }
       }
 
+      const plan = targetLevel === undefined ? {} : planClanWarUpgrade(
+        [...allSaved, ...metaCandidates], rawLevels, targetLevel, requiredSet, requiredCards, excluded,
+      );
       res.json({
         success: true,
         combinations: bestCombinations,
@@ -305,6 +334,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         playerName,
         message,
         suggestions,
+        ...plan,
       });
     } catch (error: any) {
       console.error('❌ Ошибка в /api/recommend-cw:', error);
@@ -444,7 +474,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
 
   router.post('/diagnose-deck', async (req, res) => {
     try {
-      const { playerName, deckId, targetLevel = MAX_UPGRADE_LEVEL } = req.body ?? {};
+      const { playerName, deckId, targetLevel = MAX_UPGRADE_LEVEL, source = 'saved' } = req.body ?? {};
       if (typeof playerName !== 'string' || !playerName.trim() || typeof deckId !== 'string' || !deckId.trim()) {
         return res.status(400).json({ error: 'Player name and deckId are required' });
       }
@@ -452,22 +482,23 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
       if (!isUpgradeTarget(targetLevel)) {
         return res.status(400).json({ error: 'Целевой уровень должен быть целым числом от 1 до ' + MAX_UPGRADE_LEVEL });
       }
+      if (source !== 'saved' && source !== 'meta') return res.status(400).json({ error: 'Invalid deck source' });
 
       const player = await prisma.player.findUnique({ where: { ownerId_name: { ownerId: userId(res), name: playerName } } });
       if (!player) return res.status(404).json({ error: 'Player not found' });
 
-      const savedDeck = await prisma.savedDeck.findFirst({
-        where: { id: deckId, playerId: player.id },
-      });
-      if (!savedDeck) return res.status(404).json({ error: 'Saved deck not found' });
+      const deck = source === 'meta'
+        ? await prisma.metaDeck.findFirst({ where: { id: deckId, isActive: true } })
+        : await prisma.savedDeck.findFirst({ where: { id: deckId, playerId: player.id } });
+      if (!deck) return res.status(404).json({ error: 'Deck not found' });
 
-      const cards: string[] = JSON.parse(savedDeck.cards);
+      const cards: string[] = JSON.parse(deck.cards);
       const levels: Record<string, number> = JSON.parse(player.levels);
       const { details, totalGold } = diagnoseUpgrades(cards, levels, targetLevel);
 
       res.json({
         success: true,
-        deckName: savedDeck.name,
+        deckName: deck.name,
         totalGold,
         details,
         targetLevel,

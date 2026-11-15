@@ -489,86 +489,97 @@ const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ c
         <input type="search" aria-label="Поиск колод по названию" placeholder="Поиск по названию…"
           value={search} onChange={event => setSearch(event.target.value)}
           className={`${filterControlClass} min-w-0 w-full sm:w-52`} />
-        <select aria-label="Источник" value={sourceFilter} onChange={event => setSourceFilter(event.target.value)}
-          className={filterControlClass}>
-          <option value="">Все источники</option>
-          {sources.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-        </select>
-        <select aria-label="Тир" value={tierFilter} onChange={event => setTierFilter(event.target.value)}
-          className={filterControlClass}>
-          <option value="">Все тиры</option>
-          {tiers.map(tier => <option key={tier} value={`tier:${tier}`}>{tier}</option>)}
-          <option value="untiered">Без тира</option>
-        </select>
-        <label className="inline-flex items-center gap-2 text-sm">
-          <input type="checkbox" checked={favoritesOnly} disabled={!selectedPlayerName}
-            onChange={event => setFavoritesOnly(event.target.checked)} />
-          Только избранное
-        </label>
-        <label htmlFor="deck-category" className={`font-medium ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-          Категория:
-        </label>
-        <select
-          id="deck-category"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          className={`rounded px-3 py-1 transition-colors duration-200 ${
-            isDark
-              ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
-              : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
-          } border focus:outline-none focus:ring-2 focus:ring-blue-500/50`}
-        >
-          <option value="all">Все</option>
-          {categories.map(cat => (
-            <option key={cat.id} value={cat.id}>{cat.name}</option>
-          ))}
-        </select>
+        <details className="ml-auto min-w-0 flex-1 [&[open]]:basis-full">
+          <summary className="flex w-fit cursor-pointer list-none items-center gap-2 rounded-lg bg-slate-100 px-3 py-2 text-sm font-medium dark:bg-gray-700 [&::-webkit-details-marker]:hidden">
+            <FunnelIcon aria-hidden="true" className="h-4 w-4" />
+            Фильтры и сортировка
+            {(sourceFilter || tierFilter || filter !== 'all' || favoritesOnly || hasActiveCardFilter) && (
+              <span className="h-2 w-2 rounded-full bg-blue-500" aria-label="Фильтры активны" />
+            )}
+          </summary>
+          <div className="mt-3 flex flex-wrap items-center gap-3 border-t border-slate-200 pt-3 dark:border-gray-700">
+            <select aria-label="Источник" value={sourceFilter} onChange={event => setSourceFilter(event.target.value)}
+              className={filterControlClass}>
+              <option value="">Все источники</option>
+              {sources.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+            </select>
+            <select aria-label="Тир" value={tierFilter} onChange={event => setTierFilter(event.target.value)}
+              className={filterControlClass}>
+              <option value="">Все тиры</option>
+              {tiers.map(tier => <option key={tier} value={`tier:${tier}`}>{tier}</option>)}
+              <option value="untiered">Без тира</option>
+            </select>
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={favoritesOnly} disabled={!selectedPlayerName}
+                onChange={event => setFavoritesOnly(event.target.checked)} />
+              Только избранное
+            </label>
+            <label htmlFor="deck-category" className={`font-medium ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+              Категория:
+            </label>
+            <select
+              id="deck-category"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              className={`rounded px-3 py-1 transition-colors duration-200 ${
+                isDark
+                  ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
+                  : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
+              } border focus:outline-none focus:ring-2 focus:ring-blue-500/50`}
+            >
+              <option value="all">Все</option>
+              {categories.map(cat => (
+                <option key={cat.id} value={cat.id}>{cat.name}</option>
+              ))}
+            </select>
 
-        <label htmlFor="deck-sort" className={`font-medium ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-          Сортировка:
-        </label>
-        <select
-          id="deck-sort"
-          value={`${sortBy}:${sortOrder}`}
-          onChange={event => {
-            const [nextSortBy, nextOrder] = event.target.value.split(':') as [MetaDeckSortBy, SortOrder];
-            setSortBy(nextSortBy);
-            setSortOrder(nextOrder);
-          }}
-          className={`rounded px-3 py-1 transition-colors duration-200 ${
-            isDark
-              ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
-              : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
-          } border focus:outline-none focus:ring-2 focus:ring-blue-500/50`}
-        >
-          <option value="name:asc">По имени (А–Я / A–Z)</option>
-          <option value="name:desc">По имени (Я–А / Z–A)</option>
-          <option value="createdAt:desc">Сначала новые</option>
-          <option value="createdAt:asc">Сначала старые</option>
-          <option value="avgElixir:asc">Сначала дешёвые</option>
-          <option value="avgElixir:desc">Сначала дорогие</option>
-        </select>
+            <label htmlFor="deck-sort" className={`font-medium ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+              Сортировка:
+            </label>
+            <select
+              id="deck-sort"
+              value={`${sortBy}:${sortOrder}`}
+              onChange={event => {
+                const [nextSortBy, nextOrder] = event.target.value.split(':') as [MetaDeckSortBy, SortOrder];
+                setSortBy(nextSortBy);
+                setSortOrder(nextOrder);
+              }}
+              className={`rounded px-3 py-1 transition-colors duration-200 ${
+                isDark
+                  ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
+                  : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
+              } border focus:outline-none focus:ring-2 focus:ring-blue-500/50`}
+            >
+              <option value="name:asc">По имени (А–Я / A–Z)</option>
+              <option value="name:desc">По имени (Я–А / Z–A)</option>
+              <option value="createdAt:desc">Сначала новые</option>
+              <option value="createdAt:asc">Сначала старые</option>
+              <option value="avgElixir:asc">Сначала дешёвые</option>
+              <option value="avgElixir:desc">Сначала дорогие</option>
+            </select>
 
-        <button
-          onClick={() => setIsFilterModalOpen(true)}
-          className={`flex items-center gap-1 px-3 py-1 text-sm rounded transition-colors ${
-            hasActiveCardFilter
-              ? isDark
-                ? 'bg-blue-600 text-white'
-                : 'bg-blue-500 text-white'
-              : isDark
-              ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-              : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-          }`}
-        >
-          <FunnelIcon className="w-4 h-4" />
-          Фильтр по картам
-          {hasActiveCardFilter && (
-            <span className="ml-1 bg-white text-blue-600 rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold">
-              {includeCards.length + excludeCards.length}
-            </span>
-          )}
-        </button>
+            <button
+              onClick={() => setIsFilterModalOpen(true)}
+              className={`flex items-center gap-1 px-3 py-1 text-sm rounded transition-colors ${
+                hasActiveCardFilter
+                  ? isDark
+                    ? 'bg-blue-600 text-white'
+                    : 'bg-blue-500 text-white'
+                  : isDark
+                  ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+              }`}
+            >
+              <FunnelIcon className="w-4 h-4" />
+              Фильтр по картам
+              {hasActiveCardFilter && (
+                <span className="ml-1 bg-white text-blue-600 rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold">
+                  {includeCards.length + excludeCards.length}
+                </span>
+              )}
+            </button>
+          </div>
+        </details>
         {decks && hasFilters && !checkingFavorites && !(favoritesOnly && saved.error) && (
           <span role="status" className="ml-auto text-sm text-gray-600 dark:text-gray-400">
             Показано {filteredDecks.length} из {decks.length}

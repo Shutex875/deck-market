@@ -1,6 +1,26 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { findClanWarCombinations } = require('../dist/services/clanWarCombinations');
+const { planClanWarUpgrade } = require('../dist/services/clanWarUpgrade');
+const { ALL_CARDS_DATA } = require('../dist/config/cards');
+
+test('four-deck upgrade plan keeps the pinned deck and chooses the cheapest valid fourth deck', () => {
+  const cards = ALL_CARDS_DATA.slice(0, 40).map(card => card.id);
+  assert.equal(cards.length, 40);
+  const decks = Array.from({ length: 5 }, (_, index) => ({
+    deckId: String(index), name: String(index), cards: cards.slice(index * 8, index * 8 + 8),
+  }));
+  const levels = Object.fromEntries(cards.slice(1, 32).map(card => [card, 15]));
+  Object.assign(levels, Object.fromEntries(cards.slice(32).map(card => [card, 12])));
+  const pinned = new Set(['0']);
+  const required = new Set([cards[9], cards[18]]);
+  const result = planClanWarUpgrade(decks, levels, 15, pinned, required, new Set());
+  assert.deepEqual(result.upgradePlan.decks.map(deck => deck.deckId), ['0', '1', '2', '3']);
+  assert.deepEqual(result.upgradePlan.missingCards, [cards[0]]);
+  assert.ok(result.upgradePlan.copiesByRarity.Common > 0);
+  const blocked = planClanWarUpgrade(decks, levels, 15, pinned, required, new Set([cards[0]]));
+  assert.match(blocked.upgradePlanBlocker, /закреплённой.+исключённая/);
+});
 
 function exhaustivelyRank(decks, pinned, limit, minimumSize, requiredCards) {
   const cardKey = card => card === 'Log' ? 'The Log' : card;

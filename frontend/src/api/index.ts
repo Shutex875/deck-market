@@ -45,6 +45,10 @@ export interface Player {
   createdAt: string;
   updatedAt: string;
   collectionCheckedAt?: string | null;
+  collectionCheckAttemptAt?: string | null;
+  collectionCheckStatus?: 'running' | 'success' | 'error' | null;
+  collectionCheckError?: string | null;
+  collectionAutoCheck?: boolean;
   collectionPreview?: CollectionPreview | null;
 }
 
@@ -147,18 +151,25 @@ export interface MetaDeck extends MetaDeckProvenance {
   slot2Type?: 'evo' | 'hero' | null;
 }
 
-export type RecommendationMode = 'account' | 'meta';
+export type RecommendationMode = 'account' | 'prospective' | 'meta';
+export interface MetaRecommendationFilters {
+  gameMode?: string;
+  since?: string;
+  minSample?: number;
+  dataKind?: 'match-stats' | 'manual-tier' | 'top-ladder';
+}
 
 export interface RecommendResponse {
   success: boolean;
   totalDecks: number;
-  decks: {
+  decks: (MetaDeckProvenance & {
     id: string;
     name: string;
     cards: string[];
     cardLevels: Record<string, number | null>;
     averageLevel: number | null;
     missingCardsCount: number;
+    upgrade?: { targetLevel: number; totalGold: number; neededCopies: number };
     score: number;
     bonus: number;
     tier: string | null;
@@ -168,7 +179,7 @@ export interface RecommendResponse {
     replacements?: { slot: number; original: string; replacement: string }[];
     slot2Type?: 'evo' | 'hero' | null;
     slotStatus?: { slot: number; type: 'evo' | 'hero' | 'champion' | 'none'; active: boolean }[];
-  }[];
+  })[];
   playerName: string;
 }
 
@@ -191,8 +202,17 @@ export interface DiagnoseResponse {
 
 // === CW Response ===
 export type ClanWarMode = 'saved-first' | 'best';
+export interface ClanWarUpgradePlan {
+  targetLevel: number;
+  totalGold: number;
+  decks: { deckId: string; name: string; cards: string[] }[];
+  missingCards: string[];
+  copiesByRarity: Record<string, number>;
+}
 
 export interface CWResponse {
+  upgradePlan?: ClanWarUpgradePlan;
+  upgradePlanBlocker?: string;
   success: boolean;
   combinations: {
     decks: {
@@ -239,14 +259,14 @@ export const transferSavedDeck = (id: string, fromPlayer: string, toPlayer: stri
 export const deleteSavedDeck = (id: string, playerName: string) =>
   api.delete(`/saved-decks/${id}`, { params: { playerName } }).then(res => res.data);
 
-export const diagnoseDeck = (playerName: string, deckId: string, signal?: AbortSignal, targetLevel?: number) =>
+export const diagnoseDeck = (playerName: string, deckId: string, signal?: AbortSignal, targetLevel?: number, source?: 'saved' | 'meta') =>
   api.post<{
     success: boolean;
     deckName: string;
     totalGold: number;
     targetLevel: number;
     details: UpgradeDetail[];
-  }>('/diagnose-deck', { playerName, deckId, targetLevel }, { signal }).then(res => res.data);
+  }>('/diagnose-deck', { playerName, deckId, targetLevel, source }, { signal }).then(res => res.data);
 
 // === Player API ===
 const players = createCachedRead(() => api.get<Player[]>('/players').then(res => res.data));
@@ -262,6 +282,8 @@ export const refreshPlayers = () => {
 };
 export const checkPlayerCollection = (id: string) =>
   api.post(`/players/${encodeURIComponent(id)}/collection/check`);
+export const setCollectionAutoCheck = (id: string, autoCheck: boolean) =>
+  api.patch(`/players/${encodeURIComponent(id)}/collection/settings`, { autoCheck });
 export const applyPlayerCollection = (id: string, previewId: string) =>
   api.post(`/players/${encodeURIComponent(id)}/collection/apply`, { previewId }).then(notifyPlayersChanged);
 export const getPlayer = (name: string, signal?: AbortSignal) =>
@@ -428,8 +450,10 @@ export const recommendDecks = (
   excludeCards: string[] = [],
   signal?: AbortSignal,
   mode?: RecommendationMode,
+  targetLevel?: number,
+  metaFilters?: MetaRecommendationFilters,
 ) =>
-  api.post<RecommendResponse>('/recommend', { playerName, limit, includeCards, excludeCards, mode }, { signal })
+  api.post<RecommendResponse>('/recommend', { playerName, limit, includeCards, excludeCards, mode, targetLevel, metaFilters }, { signal })
     .then(res => res.data);
 
 export const recommendCW = (
@@ -440,6 +464,7 @@ export const recommendCW = (
   requiredDeckIds?: string[],
   signal?: AbortSignal,
   mode: ClanWarMode = 'saved-first',
+  targetLevel?: number,
 ) =>
   api.post<CWResponse>('/recommend-cw', {
     playerName,
@@ -448,6 +473,7 @@ export const recommendCW = (
     excludeCards,
     requiredDeckIds,
     mode,
+    targetLevel,
   }, { signal }).then(res => res.data);
 
 export const diagnose = (playerName: string, targetLevel = 13) =>

@@ -165,7 +165,7 @@ test('regular recommendations preserve limit defaults, numeric strings and bound
 test('explicit recommendation mode controls ranking independently of card filters', async () => {
   const cards = ['Knight', 'Archers', 'Skeleton', 'Ice Spirit', 'Fireball', 'Cannon', 'Hog Rider', 'Valkyrie'];
   const player = { levels: JSON.stringify(Object.fromEntries(cards.map(card => [card, 14]))), evolutions: '[]', heroes: '[]' };
-  const deck = { id: 'deck', cards: JSON.stringify(cards), winRate: 55, slot2Type: null, source: { name: 'Source' } };
+  const deck = { id: 'deck', cards: JSON.stringify(cards), dataKind: 'match-stats', winRate: 55, slot2Type: null, source: { name: 'Source' } };
   const queries = [];
   const prisma = {
     player: { findUnique: async () => player },
@@ -177,7 +177,7 @@ test('explicit recommendation mode controls ranking independently of card filter
   assert.deepEqual(queries[0].where, { isActive: true });
   assert.equal((await recommend('account', { excludeCards: ['Hog Rider'] })).body.totalDecks, 0);
   assert.equal((await recommend('meta')).body.decks[0].score, 55);
-  assert.equal(queries[2].where, undefined);
+  assert.deepEqual(queries[2].where, { isActive: true });
 });
 
 test('both recommendation modes report the same owned levels and missing cards', async () => {
@@ -186,7 +186,7 @@ test('both recommendation modes report the same owned levels and missing cards',
   const prisma = {
     player: { findUnique: async () => ({ levels: JSON.stringify(levels), evolutions: '[]', heroes: '[]' }) },
     metaDeck: { findMany: async () => [{
-      id: 'deck', cards: JSON.stringify(cards), winRate: 55, slot2Type: null, source: { name: 'Source' },
+      id: 'deck', cards: JSON.stringify(cards), dataKind: 'match-stats', winRate: 55, slot2Type: null, source: { name: 'Source' },
     }] },
   };
   const recommend = async mode => {
@@ -194,7 +194,21 @@ test('both recommendation modes report the same owned levels and missing cards',
     assert.equal(result.statusCode, 200);
     return result.body.decks[0];
   };
-  const [account, meta] = await Promise.all([recommend('account'), recommend('meta')]);
+  const [account, meta] = await Promise.all([recommend('prospective'), recommend('meta')]);
+  assert.equal(await recommend('account'), undefined);
+  assert.equal(await recommend(undefined), undefined);
+  const plan = await request('/diagnose-deck', {
+    playerName: 'Player', deckId: 'deck', source: 'meta', targetLevel: 16,
+  }, {
+    ...prisma,
+    metaDeck: { findFirst: async ({ where }) => {
+      assert.deepEqual(where, { id: 'deck', isActive: true });
+      return { name: 'Meta deck', cards: JSON.stringify(cards) };
+    } },
+  });
+  assert.equal(plan.statusCode, 200);
+  assert.equal(account.upgrade.totalGold, plan.body.totalGold);
+  assert.equal(account.upgrade.neededCopies, plan.body.details.reduce((sum, card) => sum + card.neededCards, 0));
   assert.deepEqual(account.cardLevels, meta.cardLevels);
   assert.equal(account.cardLevels['The Log'], 1);
   assert.equal(account.cardLevels['Hog Rider'], null);
@@ -318,14 +332,14 @@ test('filtered recommendations use catalog scoring before applying the requested
   const source = { name: 'Catalog source' };
   const row = (id, cards, fields = {}) => ({
     id, name: id, cards: JSON.stringify(cards), tier: 'A', winRate: null,
-    source, slot2Type: null, isActive: false, ...fields,
+    source, slot2Type: null, isActive: true, ...fields,
   });
   const rows = [
     row('a', ['Knight', 'Ice Spirit'], { winRate: 100 }),
-    row('b', ['Knight', 'Archers']),
-    row('c', ['Knight', 'Skeleton']),
+    row('b', ['Knight', 'Archers'], { dataKind: 'example', winRate: 99 }),
+    row('c', ['Knight', 'Skeleton'], { dataKind: 'top-ladder' }),
     row('d', ['Archers', 'Skeleton'], { tier: 'S' }),
-    row('e', ['Knight', 'Goblins'], { winRate: 55 }),
+    row('e', ['Knight', 'Goblins'], { dataKind: 'match-stats', winRate: 55 }),
   ];
   const result = await request('/recommend', {
     playerName: 'Player', includeCards: ['Knight'], excludeCards: ['Ice Spirit'], limit: 1,
@@ -334,7 +348,7 @@ test('filtered recommendations use catalog scoring before applying the requested
     metaDeck: {
       findMany: async query => {
         assert.deepEqual(query.orderBy, { name: 'asc' });
-        assert.equal(query.where, undefined);
+        assert.deepEqual(query.where, { isActive: true });
         return rows;
       },
     },
@@ -344,6 +358,33 @@ test('filtered recommendations use catalog scoring before applying the requested
   assert.deepEqual(result.body.decks.map(({ id, cards, score, bonus }) => ({ id, cards, score, bonus })), [
     { id: 'e', cards: ['Knight', 'Goblins'], score: 55, bonus: 0 },
   ]);
+});
+
+test('meta recommendations validate and apply provenance filters before ranking', async () => {
+  const body = { playerName: 'Player', mode: 'meta' };
+  const metaFilters = { gameMode: 'ranked', since: '2026-11-01', minSample: 100, dataKind: 'match-stats' };
+  const row = (id, sampleSize, gameMode, dataDate) => ({
+    id, name: id, dataKind: 'match-stats', gameMode, dataDate, sampleSize,
+    winRate: 55, cards: '["Knight"]', source: { name: 'Catalog source' },
+  });
+  assert.equal((await request('/recommend', { ...body, metaFilters: { since: '2026-02-30' } }, {})).statusCode, 400);
+  const result = await request('/recommend', { ...body, metaFilters }, {
+    player: { findUnique: async () => ({ levels: '{}', evolutions: '[]', heroes: '[]' }) },
+    metaDeck: { findMany: async ({ where }) => {
+      assert.deepEqual(where, {
+        isActive: true, dataDate: { gte: '2026-11-01' }, sampleSize: { gte: 100 }, dataKind: 'match-stats',
+      });
+      return [
+        row('a', 100, 'Ranked', '2026-11-08'),
+        row('b', 200, 'Ranked', '2026-11-03'),
+        row('c', 200, 'Ranked', '2026-11-07'),
+        row('d', 500, 'Classic Challenge', '2026-11-08'),
+      ];
+    } },
+  });
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(result.body.decks.map(deck => deck.id), ['c', 'b', 'a']);
+  assert.equal(result.body.decks[0].sampleSize, 200);
 });
 
 test('duplicate check matches compositions across both catalogs with two database reads', async () => {

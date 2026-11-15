@@ -1,7 +1,8 @@
 import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { BrowserRouter as Router, Routes, Route, NavLink, Navigate, Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import { ThemeProvider, useTheme } from './context/ThemeContext';
-import { SunIcon, MoonIcon } from '@heroicons/react/24/outline';
+import { SunIcon, MoonIcon, RectangleStackIcon, BookmarkSquareIcon } from '@heroicons/react/24/outline';
+import NavigationMenu from './components/NavigationMenu';
 import AuthGate from './components/AuthGate';
 import type { UserSession } from './api/session';
 import { getPlayers, type Player } from './api';
@@ -79,7 +80,10 @@ function AppContent({ user, logout, updateUser }: {
     }
     const query = new URLSearchParams(location.search);
     query.delete('player');
-    if (location.pathname === '/upgrade-plan' || location.pathname === '/diagnose') query.delete('deckId');
+    if (location.pathname === '/upgrade-plan' || location.pathname === '/diagnose') {
+      query.delete('deckId');
+      query.delete('metaDeckId');
+    }
     navigate({ search: query.toString() }, { replace: true });
   };
 
@@ -110,52 +114,56 @@ function AppContent({ user, logout, updateUser }: {
     <div className={`min-h-screen transition-colors duration-300 ${
       isDark
         ? 'bg-gray-900 text-gray-100'
-        : 'bg-gradient-to-br from-blue-50 to-purple-100 text-gray-900'
+        : 'bg-slate-50 text-slate-900'
     }`}>
-      <nav className={`shadow-md p-4 transition-colors duration-300 ${
-        isDark ? 'bg-gray-800' : 'bg-white'
-      }`}>
-        <div className="max-w-6xl mx-auto flex flex-wrap items-center gap-2 justify-center">
-          <NavLink to="/" className={navLinkClass}>Главная</NavLink>
-          <NavLink to="/players" className={navLinkClass}>Аккаунты</NavLink>
-          <NavLink to="/decks" className={navLinkClass}>Мета-колоды</NavLink>
-          <NavLink to="/upgrade-plan" className={navLinkClass}>План прокачки</NavLink>
-          <NavLink to="/more" className={navLinkClass}>Ещё</NavLink>
-          {activePlayer ? (
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              {players.length > 1 ? (
-                <label className="flex items-center gap-2">
-                  Аккаунт
-                  <select className="rounded border bg-white px-2 py-1 dark:border-gray-600 dark:bg-gray-700"
+      <header className="border-b border-slate-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+          <Link to="/" aria-label="BastDecks · Главная" className="flex items-center gap-2 font-bold tracking-tight">
+            <BookmarkSquareIcon aria-hidden="true" className="h-7 w-7 rounded-lg bg-blue-700 p-1 text-white" />
+            BastDecks
+          </Link>
+          <nav aria-label="Основная навигация" className="order-last flex w-full flex-wrap items-center gap-1 border-t border-slate-100 pt-2 dark:border-gray-700 lg:order-none lg:w-auto lg:border-0 lg:pt-0">
+            <NavLink to="/decks" className={navLinkClass}>Мета-колоды</NavLink>
+            <NavigationMenu key={location.key + '-decks'} label="Подбор">
+              <NavLink to="/recommend" className={navLinkClass}>Подбор под аккаунт</NavLink>
+              <NavLink to="/clanwar" className={navLinkClass}>Клановые войны</NavLink>
+              <NavLink to="/my-decks" className={navLinkClass}>Мои колоды</NavLink>
+            </NavigationMenu>
+            <NavLink to="/upgrade-plan" className={navLinkClass}>Прокачка</NavLink>
+            <NavLink to="/more" className={navLinkClass}>Ещё</NavLink>
+          </nav>
+          <div className="ml-auto flex max-w-full flex-wrap items-center gap-1">
+            {activePlayer ? (
+              <div className="flex max-w-full items-center rounded-lg border border-slate-200 bg-slate-50 text-sm dark:border-gray-700 dark:bg-gray-900">
+                {players.length > 1 && (
+                  <select aria-label="Игровой аккаунт" className="max-w-32 rounded-l-lg bg-transparent py-1.5 pl-2 dark:bg-gray-900"
                     value={activePlayer.id} onChange={event => changeActivePlayer(event.target.value)}>
                     {players.map(player => <option key={player.id} value={player.id}>{player.name}</option>)}
                   </select>
-                </label>
-              ) : <span>Аккаунт <strong>{activePlayer.name}</strong></span>}
-              <Link className="text-blue-700 underline dark:text-blue-300"
-                to={`/players/edit/${encodeURIComponent(activePlayer.name)}`}>Коллекция</Link>
-            </div>
-          ) : !profilesLoading && <Link to="/players/new" className="text-sm underline">Добавить аккаунт</Link>}
-          <NavLink to="/profile" title="Настройки профиля" className={state => `ml-auto ${navLinkClass(state)}`}>
-            {user.username}
-          </NavLink>
-          <button type="button" onClick={() => void handleLogout()} disabled={loggingOut}
-            className="rounded-md px-3 py-2 text-sm underline disabled:opacity-50">
-            Выйти
-          </button>
-          <button
-            onClick={toggleTheme}
-            className={`p-2 rounded-full transition-colors duration-200 ${
-              isDark
-                ? 'bg-gray-700 hover:bg-gray-600 text-yellow-400'
-                : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
-            }`}
-            aria-label="Переключить тему"
-          >
-            {isDark ? <SunIcon className="w-5 h-5" /> : <MoonIcon className="w-5 h-5" />}
-          </button>
+                )}
+                <Link className="inline-flex max-w-40 items-center gap-1 rounded-lg px-2 py-1.5 hover:text-blue-700 dark:hover:text-blue-300"
+                  title="Коллекция активного аккаунта" aria-label="Коллекция активного аккаунта"
+                  to={`/players/edit/${encodeURIComponent(activePlayer.name)}`}>
+                  <RectangleStackIcon aria-hidden="true" className="h-4 w-4 shrink-0" />
+                  {players.length === 1 && <span className="truncate">{activePlayer.name}</span>}
+                </Link>
+              </div>
+            ) : !profilesLoading && <Link to="/players/new" className="px-2 text-sm text-blue-700 dark:text-blue-300">Добавить аккаунт</Link>}
+            <NavigationMenu key={location.key + '-profile'} align="right" label={<span className="max-w-24 truncate">{user.username}</span>}>
+              <NavLink to="/profile" className={navLinkClass}>Настройки профиля</NavLink>
+              <NavLink to="/players" className={navLinkClass}>Игровые аккаунты</NavLink>
+              <button type="button" onClick={toggleTheme} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-slate-100 dark:hover:bg-gray-700">
+                {isDark ? <SunIcon className="h-4 w-4" /> : <MoonIcon className="h-4 w-4" />}
+                {isDark ? 'Светлая тема' : 'Тёмная тема'}
+              </button>
+              <button type="button" onClick={() => void handleLogout()} disabled={loggingOut}
+                className="rounded-md px-3 py-2 text-left text-sm text-red-700 hover:bg-red-50 disabled:opacity-50 dark:text-red-300 dark:hover:bg-gray-700">
+                Выйти
+              </button>
+            </NavigationMenu>
+          </div>
         </div>
-      </nav>
+      </header>
 
       <div className="max-w-6xl mx-auto p-4">
         {logoutError && <p role="alert" className="mb-3 text-sm text-red-600 dark:text-red-400">{logoutError}</p>}
@@ -178,7 +186,8 @@ function AppContent({ user, logout, updateUser }: {
             <Route path="/diagnose" element={<Navigate to={`/upgrade-plan${location.search}`} replace />} />
             <Route path="/upgrade-plan" element={<UpgradePlan />}>
               <Route index element={<Diagnose key={`${activePlayer?.id}:${location.search}`} />} />
-              {['budget', 'clan-war', 'shared-cards'].map(path => (
+              <Route path="clan-war" element={<ClanWarRecommend key={activePlayer?.id} upgrade />} />
+              {['budget', 'shared-cards'].map(path => (
                 <Route key={path} path={path} element={<p>Эта вкладка пока недоступна.</p>} />
               ))}
             </Route>

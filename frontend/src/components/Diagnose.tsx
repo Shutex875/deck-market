@@ -16,6 +16,7 @@ import { diagnoseDeck, type UpgradeDetail } from '../api';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import { CardIcon } from '../utils/cardImages';
 import { useTheme } from '../context/ThemeContext';
+import { planUpgrades } from '../utils/planUpgrades';
 
 const formatNumber = (num: number): string => {
   if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
@@ -31,23 +32,29 @@ const Diagnose: React.FC = () => {
 
   const [searchParams, setSearchParams] = useSearchParams();
   const deckIdParam = searchParams.get('deckId');
+  const metaDeckId = searchParams.get('metaDeckId');
+  const requestedLevel = Number(searchParams.get('targetLevel'));
 
   const { activePlayer, players } = useActivePlayer();
   const selectedPlayer = activePlayer?.name ?? '';
   const { decks, loading: savedDecksLoading, error: savedDecksError } = useSavedDecks(selectedPlayer);
   const [preferredDeckId, setPreferredDeckId] = useState(deckIdParam || '');
   const selectedDeck = decks.find(deck => deck.id === preferredDeckId) ?? decks[0];
-  const selectedDeckId = selectedDeck?.id ?? '';
+  const selectedDeckId = metaDeckId ?? selectedDeck?.id ?? '';
   const [diagnosis, setDiagnosis] = useState<null | {
     deckName: string;
     totalGold: number;
     targetLevel: number;
     details: (UpgradeDetail & { cardsHave: number })[];
   }>(null);
-  const [targetLevel, setTargetLevel] = useState(16);
+  const [targetLevel, setTargetLevel] = useState(
+    Number.isInteger(requestedLevel) && requestedLevel >= 1 && requestedLevel <= 16 ? requestedLevel : 16,
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showDetails, setShowDetails] = useState(false);
+  const [goldInput, setGoldInput] = useState('');
+  const goldBalance = goldInput === '' ? null : Number(goldInput);
   const [wildcards, setWildcards] = useState<Record<string, number>>({
     Common: 0,
     Rare: 0,
@@ -58,19 +65,19 @@ const Diagnose: React.FC = () => {
 
 
   useEffect(() => {
-    if (!selectedDeck) return;
+    if (!selectedDeckId || !selectedPlayer) return;
     const request = new AbortController();
     void runDiagnose(request.signal);
     return () => request.abort();
-  }, [selectedDeck, selectedPlayer, targetLevel]);
+  }, [selectedDeckId, selectedPlayer, targetLevel, metaDeckId, activePlayer?.levels]);
 
 
   const runDiagnose = async (signal: AbortSignal) => {
-    if (!selectedDeck || !selectedPlayer) return;
+    if (!selectedDeckId || !selectedPlayer) return;
     setLoading(true);
     setError('');
     try {
-      const result = await diagnoseDeck(selectedPlayer, selectedDeck.id, signal, targetLevel);
+      const result = await diagnoseDeck(selectedPlayer, selectedDeckId, signal, targetLevel, metaDeckId ? 'meta' : 'saved');
       if (signal.aborted) return;
       setDiagnosis(previous => ({
         ...result,
@@ -90,7 +97,7 @@ const Diagnose: React.FC = () => {
     if (!diagnosis) return;
     const num = Math.max(0, parseInt(value) || 0);
     const newDetails = [...diagnosis.details];
-    newDetails[index].cardsHave = num;
+    newDetails[index] = { ...newDetails[index], cardsHave: num };
     setDiagnosis({ ...diagnosis, details: newDetails });
   };
 
@@ -108,19 +115,23 @@ const Diagnose: React.FC = () => {
     if (!diagnosis) return null;
     const needed: Record<string, number> = {};
     const have: Record<string, number> = {};
+    const unlockDeficit: Record<string, number> = {};
     RARITY_KEYS.forEach(r => { needed[r] = 0; have[r] = 0; });
     diagnosis.details.forEach(item => {
       const { rarity } = item;
       if (!rarity) return;
       const remaining = Math.max(0, item.neededCards - item.cardsHave);
       needed[rarity] += remaining;
+      if (item.currentLevel === 0 && item.cardsHave === 0 && item.steps?.length) {
+        unlockDeficit[rarity] = (unlockDeficit[rarity] ?? 0) + item.steps[0].copies;
+      }
       have[rarity] += item.cardsHave;
     });
     const result: Record<string, number> = {};
     let totalNeeded = 0;
     RARITY_KEYS.forEach(r => {
       const wild = wildcards[r] || 0;
-      const remaining = Math.max(0, needed[r] - wild);
+      const remaining = Math.max(unlockDeficit[r] ?? 0, needed[r] - wild);
       result[r] = remaining;
       totalNeeded += remaining;
     });
@@ -129,9 +140,9 @@ const Diagnose: React.FC = () => {
 
   const raritySummary = getRaritySummary();
   const unopenedCards = diagnosis?.details.filter(item => item.currentLevel === 0).map(item => item.card) ?? [];
-  const upgradeOrder = diagnosis?.details.flatMap(item =>
-    (item.steps ?? []).map(step => ({ ...step, card: item.card })),
-  ).sort((a, b) => a.level - b.level || a.gold - b.gold || a.card.localeCompare(b.card));
+  const upgradeOrder = diagnosis ? planUpgrades(diagnosis.details, wildcards, goldBalance) : [];
+  const availableSteps = upgradeOrder.filter(step => step.status === 'available');
+  const pendingSteps = upgradeOrder.filter(step => step.status !== 'available');
 
   return (
     <motion.div
@@ -145,7 +156,7 @@ const Diagnose: React.FC = () => {
       <div className={`p-4 rounded-lg shadow mb-6 transition-colors duration-200 ${
         isDark ? 'bg-gray-800' : 'bg-white'
       }`}>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid items-end gap-4 sm:grid-cols-[1fr_1.5fr_0.8fr]">
           <label className="flex flex-col gap-1 font-medium">
             Игровой профиль
             <select className="rounded border p-2 dark:border-gray-600 dark:bg-gray-700"
@@ -161,9 +172,13 @@ const Diagnose: React.FC = () => {
             </label>
             <select
               aria-label="Колода"
-              disabled={!decks.length}
+              disabled={!decks.length && !metaDeckId}
               value={selectedDeckId}
               onChange={(e) => {
+                if (metaDeckId) {
+                  setSearchParams({ player: selectedPlayer, deckId: e.target.value, targetLevel: String(targetLevel) });
+                  return;
+                }
                 setDiagnosis(null);
                 setPreferredDeckId(e.target.value);
               }}
@@ -173,24 +188,22 @@ const Diagnose: React.FC = () => {
                   : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
               } border focus:outline-none focus:ring-2 focus:ring-blue-500/50`}
             >
-              {!decks.length && <option value="">{savedDecksLoading ? 'Загрузка…' : 'Нет сохранённых колод'}</option>}
+              {metaDeckId && <option value={metaDeckId}>{diagnosis?.deckName ?? 'Мета-колода'}</option>}
+              {!decks.length && !metaDeckId && <option value="">{savedDecksLoading ? 'Загрузка…' : 'Нет сохранённых колод'}</option>}
               {decks.map(d => (
                 <option key={d.id} value={d.id}>{d.name}</option>
               ))}
             </select>
           </div>
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-4 items-end">
           <div>
             <label className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-              Целевой уровень (от 1 до 16)
+              Целевой уровень
             </label>
             <select
               aria-label="Целевой уровень"
               value={targetLevel}
               onChange={handleTargetLevelChange}
-              className={`w-32 rounded px-3 py-2 transition-colors duration-200 ${
+              className={`w-full rounded px-3 py-2 transition-colors duration-200 ${
                 isDark
                   ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
                   : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
@@ -201,6 +214,25 @@ const Diagnose: React.FC = () => {
               ))}
             </select>
           </div>
+        </div>
+
+        {selectedPlayer && !savedDecksLoading && !savedDecksError && !selectedDeckId && (
+          <Link to="/decks" className="mt-3 inline-block text-sm font-medium text-blue-700 underline dark:text-blue-300">
+            Выбрать колоду в каталоге
+          </Link>
+        )}
+
+        <details className="mt-4 rounded-lg border border-slate-200 px-3 py-2 dark:border-gray-700">
+          <summary className="cursor-pointer text-sm font-medium">Запасы золота и джокеров</summary>
+          <label className="my-2 flex flex-wrap items-center gap-2 text-sm">
+            Баланс золота
+            <input type="number" min={0} step={1} value={goldInput} placeholder="Не указан"
+              className="w-36 rounded border p-1 dark:border-gray-600 dark:bg-gray-700"
+              onChange={event => {
+                const value = event.target.value;
+                setGoldInput(value === '' ? '' : String(Math.max(0, Math.trunc(Number(value)))));
+              }} />
+          </label>
           <div className="flex flex-wrap gap-2">
             <span className={`text-sm font-medium self-center ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
               Джокеры:
@@ -223,7 +255,7 @@ const Diagnose: React.FC = () => {
               </div>
             ))}
           </div>
-        </div>
+        </details>
       </div>
 
       {(error || savedDecksError) && (
@@ -280,8 +312,7 @@ const Diagnose: React.FC = () => {
             </div>
 
             <p className={`text-sm mb-4 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-              Целевой уровень: {diagnosis.targetLevel}. В расчёте учтены золото и копии карт.
-              Введённые копии и джокеры уменьшают остаток по картам. Баланс золота и самоцветы не учитываются.
+              Для открытия карты нужна её первая копия.
             </p>
             {diagnosis.details.some(item => item.rarity === null) && (
               <p className="mb-4 text-sm text-orange-700 dark:text-orange-300">
@@ -289,17 +320,40 @@ const Diagnose: React.FC = () => {
               </p>
             )}
 
-            {Boolean(upgradeOrder?.length) && (
-              <details className="mb-4 rounded border border-gray-300 p-3 dark:border-gray-600">
+            {upgradeOrder.length > 0 && (
+              <details open className="mb-4 rounded border border-gray-300 p-3 dark:border-gray-600">
                 <summary className="cursor-pointer font-semibold">Порядок улучшений</summary>
-                <p className="my-2 text-sm">Сначала переходы на более низкие уровни. При одинаковом уровне первым идёт самый дешёвый переход.</p>
+
+                <p className="my-2 text-sm">Запасы распределяются по порядку: сначала более низкие уровни, затем более дешёвые переходы на том же уровне.</p>
+                <h3 className="mt-3 font-semibold text-green-700 dark:text-green-300">
+                  {goldBalance === null ? 'Хватает копий' : 'Можно улучшить'} · {availableSteps.length}
+                </h3>
+                {goldBalance === null && <p className="text-sm">Укажите баланс золота, чтобы проверить, какие шаги доступны сейчас.</p>}
                 <ol className="list-decimal space-y-1 pl-6 text-sm">
-                  {upgradeOrder?.map(step => (
+                  {availableSteps.map(step => (
                     <li key={`${step.card}-${step.level}`}>
-                      {step.card} → ур. {step.level} · {step.gold.toLocaleString('ru-RU')} золота · копий: {step.copies}
+                      {step.card} → ур. {step.level} · {step.gold.toLocaleString('ru-RU')} золота ·
+                      {' '}копий: {step.cardCopiesUsed}{step.wildcardsUsed > 0 && ` + джокеров: ${step.wildcardsUsed}`}
                     </li>
                   ))}
                 </ol>
+                {pendingSteps.length > 0 && (
+                  <details className="mt-3 border-t border-slate-200 pt-3 dark:border-gray-700">
+                    <summary className="cursor-pointer font-semibold text-orange-700 dark:text-orange-300">Нужно накопить · {pendingSteps.length}</summary>
+                    <ol className="mt-2 list-decimal space-y-1 pl-6 text-sm">
+                      {pendingSteps.map(step => (
+                        <li key={`${step.card}-${step.level}`}>
+                          {step.card} → ур. {step.level} · {step.status === 'previous-step'
+                            ? 'Сначала выполните предыдущий шаг'
+                            : `Не хватает ${[
+                              step.missingCopies ? `копий: ${step.missingCopies}` : '',
+                              step.missingGold ? `золота: ${step.missingGold.toLocaleString('ru-RU')}` : '',
+                            ].filter(Boolean).join(', ')}`}
+                        </li>
+                      ))}
+                    </ol>
+                  </details>
+                )}
               </details>
             )}
             {unopenedCards.length > 0 && <p className="mb-4 text-sm">Не открыты: {unopenedCards.join(', ')}.</p>}
@@ -313,11 +367,11 @@ const Diagnose: React.FC = () => {
               >
                 {showDetails ? (
                   <>
-                    <ChevronUpIcon className="w-4 h-4" /> Скрыть детали
+                    <ChevronUpIcon className="w-4 h-4" /> Скрыть запасы копий и стоимость по картам
                   </>
                 ) : (
                   <>
-                    <ChevronDownIcon className="w-4 h-4" /> Показать детали
+                    <ChevronDownIcon className="w-4 h-4" /> Указать запасы копий
                   </>
                 )}
               </button>
@@ -370,6 +424,7 @@ const Diagnose: React.FC = () => {
                             <input
                               type="number"
                               min="0"
+                              aria-label={`Копий карты ${item.card} в запасе`}
                               value={item.cardsHave}
                               onChange={(e) => handleCardsHaveChange(idx, e.target.value)}
                               className={`w-16 rounded px-1 py-1 text-sm text-center transition-colors duration-200 ${

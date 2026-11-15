@@ -16,7 +16,7 @@ import {
   CheckIcon,
   InformationCircleIcon,
 } from '@heroicons/react/24/outline';
-import { recommendCW, type ClanWarMode } from '../api';
+import { recommendCW, type ClanWarMode, type ClanWarUpgradePlan } from '../api';
 import { CardIcon } from '../utils/cardImages';
 import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
@@ -49,6 +49,8 @@ interface CWCombination {
 }
 
 interface CWResponse {
+  upgradePlan?: ClanWarUpgradePlan;
+  upgradePlanBlocker?: string;
   success: boolean;
   combinations: CWCombination[];
   totalCombinations: number;
@@ -58,7 +60,35 @@ interface CWResponse {
   suggestions?: string[];
 }
 
-const ClanWarRecommend: React.FC = () => {
+const rarityLabels: Record<string, string> = {
+  Common: 'Обычные', Rare: 'Редкие', Epic: 'Эпические', Legendary: 'Легендарные', Champion: 'Чемпионы',
+};
+
+function ClanWarPlanDetails({ plan }: { plan: ClanWarUpgradePlan }) {
+  return (
+    <>
+      <p className="mb-2 text-sm">До ур. {plan.targetLevel} · {plan.totalGold.toLocaleString('ru-RU')} золота</p>
+      <ul className="space-y-2">
+        {plan.decks.map(deck => <li key={deck.deckId}>
+          <strong>{deck.name}</strong>
+          <p className="text-sm">{deck.cards.join(', ')}</p>
+        </li>)}
+      </ul>
+      {plan.missingCards.length > 0 && <p className="mt-3 text-sm">Не открыты: {plan.missingCards.join(', ')}</p>}
+      <p className="mt-3 text-sm font-semibold">Нужно копий по редкости</p>
+      <p className="text-xs text-gray-600 dark:text-gray-300">Расчёт по уровням карт. Запасы копий и джокеров не учтены.</p>
+      {Object.keys(plan.copiesByRarity).length ? (
+        <ul className="text-sm">
+          {Object.entries(rarityLabels).filter(([rarity]) => plan.copiesByRarity[rarity]).map(([rarity, label]) => (
+            <li key={rarity}>{label}: {plan.copiesByRarity[rarity].toLocaleString('ru-RU')}</li>
+          ))}
+        </ul>
+      ) : <p className="text-sm">Дополнительные копии не нужны.</p>}
+    </>
+  );
+}
+
+const ClanWarRecommend: React.FC<{ upgrade?: boolean }> = ({ upgrade = false }) => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
@@ -67,6 +97,7 @@ const ClanWarRecommend: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [mode, setMode] = useState<ClanWarMode>('saved-first');
+  const [targetLevel, setTargetLevel] = useState(16);
   const [result, setResult] = useState<CWResponse | null>(null);
   const [displayLimit, setDisplayLimit] = useState(1);
 
@@ -178,6 +209,7 @@ const ClanWarRecommend: React.FC = () => {
         selectedSavedDeckIds.length > 0 ? selectedSavedDeckIds : undefined,
         request.signal,
         mode,
+        upgrade ? targetLevel : undefined,
       );
       if (request.signal.aborted) return;
       if (data && data.combinations) {
@@ -311,7 +343,7 @@ const ClanWarRecommend: React.FC = () => {
     <div className={`max-w-7xl mx-auto transition-colors duration-200 ${
       isDark ? 'text-gray-200' : 'text-gray-900'
     }`}>
-      <h2 className="text-2xl font-bold mb-4">Clan Wars – подбор связок</h2>
+      <h2 className="text-2xl font-bold mb-4">{upgrade ? 'Четыре для КВ' : 'Clan Wars – подбор связок'}</h2>
 
       <div className={`p-4 rounded-lg shadow mb-6 transition-colors duration-200 ${
         isDark ? 'bg-gray-800' : 'bg-white'
@@ -332,6 +364,15 @@ const ClanWarRecommend: React.FC = () => {
             </select>
           </label>
           <p className="w-full text-sm">Обязательные карты могут быть в разных колодах одной связки.</p>
+          {upgrade && (
+            <label className="flex flex-col gap-1 text-sm font-medium">
+              Целевой уровень
+              <select value={targetLevel} disabled={loading} className="rounded border p-2 dark:bg-gray-700"
+                onChange={event => { setTargetLevel(Number(event.target.value)); setResult(null); }}>
+                {Array.from({ length: 16 }, (_, index) => index + 1).map(level => <option key={level}>{level}</option>)}
+              </select>
+            </label>
+          )}
           <div>
             <label className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
               Кол-во связок
@@ -453,7 +494,30 @@ const ClanWarRecommend: React.FC = () => {
             exit={{ opacity: 0 }}
             className="space-y-4"
           >
-            {result.message && (
+            {upgrade && (
+              <div className="grid gap-4 md:grid-cols-2">
+                <section className="rounded-lg bg-white p-4 shadow dark:bg-gray-800">
+                  <h3 className="font-bold">Могу сыграть сейчас</h3>
+                  {result.combinations[0] ? (
+                    <>
+                      <p className="mb-2 text-sm">{result.foundSize} из 4 колод</p>
+                      <ul className="space-y-2">
+                        {result.combinations[0].decks.map(deck => <li key={deck.deckId}>
+                          <strong>{deck.name}</strong>
+                          <p className="text-sm">{deck.cards.join(', ')}</p>
+                        </li>)}
+                      </ul>
+                    </>
+                  ) : <p>{result.message ?? 'Готовой связки с этими условиями нет.'}</p>}
+                </section>
+                <section className="rounded-lg bg-white p-4 shadow dark:bg-gray-800">
+                  <h3 className="font-bold">Что нужно для четырёх</h3>
+                  {result.upgradePlan ? <ClanWarPlanDetails plan={result.upgradePlan} />
+                    : <p>{result.upgradePlanBlocker ?? 'План не найден.'}</p>}
+                </section>
+              </div>
+            )}
+            {!upgrade && result.message && (
               <div role="status" className="rounded-lg bg-yellow-100 p-4 text-yellow-900 dark:bg-yellow-900/30 dark:text-yellow-300">
                 <p className="font-semibold">
                   {result.foundSize ? `Можно сыграть сейчас: ${result.foundSize} из 4 колод` : 'Готовой связки с этими условиями нет'}
@@ -464,7 +528,7 @@ const ClanWarRecommend: React.FC = () => {
             )}
 
             {/* Сводка */}
-            {result.combinations.length > 0 && (
+            {!upgrade && result.combinations.length > 0 && (
               <motion.div
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -497,7 +561,7 @@ const ClanWarRecommend: React.FC = () => {
               }}
               className="space-y-4"
             >
-              {result.combinations.map((combo, idx) => (
+              {!upgrade && result.combinations.map((combo, idx) => (
                 <motion.div
                   key={idx}
                   variants={{

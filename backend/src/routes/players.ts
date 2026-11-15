@@ -122,7 +122,10 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
       where: { ...where, tag: existing.tag },
       data: {
         ...parsed.data,
-        ...(changedTag && { collectionCheckedAt: null, collectionCheckAttemptAt: null, collectionPreview: null }),
+        ...(changedTag && {
+          collectionCheckedAt: null, collectionCheckAttemptAt: null, collectionPreview: null,
+          collectionCheckStatus: null, collectionCheckError: null,
+        }),
       },
     });
     if (!count) return res.status(409).json({ error: 'Игровой профиль изменился. Откройте его заново' });
@@ -137,11 +140,19 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
       res.json({ success: true });
     } catch (error) {
       if (error instanceof CollectionCheckError) return res.status(error.status).json({ error: error.message });
-      if (axios.isAxiosError(error) && error.response?.status === 404) {
-        return res.status(404).json({ error: 'Игровой профиль с таким тегом не найден' });
-      }
       res.status(502).json({ error: 'Не удалось проверить коллекцию через API Clash Royale' });
     }
+  });
+
+  router.patch('/players/:id/collection/settings', async (req, res) => {
+    const { autoCheck } = req.body ?? {};
+    if (typeof autoCheck !== 'boolean') return res.status(400).json({ error: 'Укажите настройку автопроверки' });
+    const { count } = await prisma.player.updateMany({
+      where: { id: req.params.id, ownerId: userId(res) },
+      data: { collectionAutoCheck: autoCheck },
+    });
+    if (!count) return res.status(404).json({ error: 'Профиль не найден' });
+    res.json({ success: true });
   });
 
   router.post('/players/:id/collection/apply', async (req, res) => {

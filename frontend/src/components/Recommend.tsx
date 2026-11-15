@@ -1,4 +1,5 @@
 import { useActivePlayer } from '../context/ActivePlayer';
+import { Link } from 'react-router-dom';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -14,6 +15,8 @@ import {
 } from '@heroicons/react/24/outline';
 import {
   recommendDecks,
+  metaDataLabels,
+  type MetaRecommendationFilters,
   type RecommendationMode,
   saveDeck,
   deleteSavedDeck,
@@ -48,6 +51,8 @@ const Recommend: React.FC = () => {
   const selectedPlayer = activePlayer?.name ?? '';
   const [limit, setLimit] = useState(1); // по умолчанию 1
   const [mode, setMode] = useState<RecommendationMode>('account');
+  const [metaFilters, setMetaFilters] = useState<MetaRecommendationFilters>({});
+  const [targetLevel, setTargetLevel] = useState(16);
   const [decks, setDecks] = useState<RecommendedDeck[]>([]);
   const [totalDecks, setTotalDecks] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
@@ -70,7 +75,7 @@ const Recommend: React.FC = () => {
 
   const hasActiveFilter = includeCards.length > 0 || excludeCards.length > 0;
 
-  const handleRecommend = async (include = includeCards, exclude = excludeCards, count = limit, ranking = mode) => {
+  const handleRecommend = async (include = includeCards, exclude = excludeCards, count = limit, ranking = mode, target = targetLevel) => {
     if (!selectedPlayer) {
       setError('Выберите аккаунт');
       return;
@@ -83,7 +88,8 @@ const Recommend: React.FC = () => {
     setDecks([]);
     setTotalDecks(null);
     try {
-      const result = await recommendDecks(selectedPlayer, count, include, exclude, request.signal, ranking);
+      const result = await recommendDecks(selectedPlayer, count, include, exclude, request.signal, ranking, target,
+        ranking === 'meta' ? metaFilters : undefined);
       if (request.signal.aborted) return;
       setDecks(result.decks);
       setTotalDecks(result.totalDecks);
@@ -94,6 +100,16 @@ const Recommend: React.FC = () => {
     } finally {
       if (!request.signal.aborted) setLoading(false);
     }
+  };
+
+  const updateMetaFilters = (filters: MetaRecommendationFilters) => {
+    recommendRequest.current?.abort();
+    recommendRequest.current = null;
+    setMetaFilters(previous => ({ ...previous, ...filters }));
+    setLoading(false);
+    setDecks([]);
+    setTotalDecks(null);
+    setError('');
   };
 
   const handleApplyFilter = (include: string[], exclude: string[]) => {
@@ -220,14 +236,60 @@ const Recommend: React.FC = () => {
             <select value={mode}
               className="rounded border border-gray-300 bg-white px-3 py-2 dark:border-gray-600 dark:bg-gray-700"
               onChange={event => {
-                const ranking = event.target.value === 'meta' ? 'meta' : 'account';
+                const ranking = event.target.value as RecommendationMode;
                 setMode(ranking);
                 if (recommendRequest.current) void handleRecommend(includeCards, excludeCards, limit, ranking);
               }}>
-              <option value="account">Под мой аккаунт</option>
+              <option value="account">Играть сейчас</option>
+              <option value="prospective">Собрать перспективную колоду</option>
               <option value="meta">По мете</option>
             </select>
           </label>
+          {mode === 'meta' && (
+            <div className="grid w-full gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <label className="flex flex-col gap-1 text-sm">
+                Тип данных
+                <select className="rounded border p-2 dark:bg-gray-700" value={metaFilters.dataKind ?? ''}
+                  onChange={event => updateMetaFilters({ dataKind: (event.target.value || undefined) as MetaRecommendationFilters['dataKind'] })}>
+                  <option value="">Все типы</option>
+                  <option value="match-stats">Статистика матчей</option>
+                  <option value="manual-tier">Ручной тир</option>
+                  <option value="top-ladder">Примеры Top Ladder</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                Игровой режим
+                <input className="rounded border p-2 dark:bg-gray-700" placeholder="Например, Ranked" maxLength={80}
+                  onChange={event => updateMetaFilters({ gameMode: event.target.value.trim() || undefined })}
+                  defaultValue={metaFilters.gameMode} />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                Дата данных с
+                <input className="rounded border p-2 dark:bg-gray-700" type="date" value={metaFilters.since ?? ''}
+                  onChange={event => updateMetaFilters({ since: event.target.value || undefined })} />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                Минимум матчей
+                <input className="rounded border p-2 dark:bg-gray-700" type="number" min={1} max={2147483647}
+                  value={metaFilters.minSample ?? ''}
+                  onChange={event => updateMetaFilters({ minSample: event.target.valueAsNumber > 0
+                    ? Math.min(2147483647, Math.floor(event.target.valueAsNumber)) : undefined })} />
+              </label>
+            </div>
+          )}
+          {mode === 'prospective' && (
+            <label className="flex flex-col gap-1 text-sm font-medium">
+              Целевой уровень
+              <select value={targetLevel} className="rounded border px-3 py-2 dark:border-gray-600 dark:bg-gray-700"
+                onChange={event => {
+                  const target = Number(event.target.value);
+                  setTargetLevel(target);
+                  if (recommendRequest.current) void handleRecommend(includeCards, excludeCards, limit, mode, target);
+                }}>
+                {Array.from({ length: 16 }, (_, index) => index + 1).map(level => <option key={level}>{level}</option>)}
+              </select>
+            </label>
+          )}
           <button
             onClick={() => void handleRecommend()}
             disabled={loading}
@@ -320,12 +382,21 @@ const Recommend: React.FC = () => {
                     <div className={`text-sm flex items-center gap-2 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
                       <ChartBarIcon className="w-4 h-4" />
                       <span className="font-semibold">
-                        Мета: {deck.winRate !== null ? `${deck.winRate}% побед` : deck.tier ? `тир ${deck.tier}` : 'без оценки'}
+                        {deck.dataKind === 'top-ladder' ? metaDataLabels['top-ladder']
+                          : deck.winRate != null ? `${deck.winRate}% побед` : deck.tier ? `Тир ${deck.tier}` : 'Без оценки'}
                       </span>
                     </div>
                   </div>
 
                   <div className={`text-sm mt-1 flex flex-wrap items-center gap-2 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
+                    {mode === 'meta' && (
+                      <>
+                        {deck.dataKind !== 'top-ladder' && <span>{deck.dataKind ? metaDataLabels[deck.dataKind] : 'Тип данных не указан'}</span>}
+                        {deck.gameMode && <span>{deck.gameMode}</span>}
+                        {deck.dataDate && <time dateTime={deck.dataDate}>{deck.dataDate.split('-').reverse().join('.')}</time>}
+                        {deck.sampleSize != null && <span>Матчей: {deck.sampleSize.toLocaleString('ru-RU')}</span>}
+                      </>
+                    )}
                     <span>Категория: {safeString(deck.category)}</span>
                     <span>Источник: {safeString(deck.source)}</span>
                     {deck.replacements && deck.replacements.length > 0 && (
@@ -393,12 +464,23 @@ const Recommend: React.FC = () => {
                         : isFull ? 'Все карты доступны' : 'Колода неполная'}
                     </span>
                     {deck.averageLevel != null && <span>Ср. уровень доступных карт: {deck.averageLevel.toFixed(2)}</span>}
-                    {mode === 'account' && (
+                    {mode !== 'meta' && (
                       <span title="При расчёте оценки недостающие карты учитываются как карты 1-го уровня">
                         Оценка аккаунта: {deck.score.toFixed(2)} (бонус слотов +{deck.bonus.toFixed(2)})
                       </span>
                     )}
                   </div>
+                  {deck.upgrade && (
+                    <div className="mt-2 space-y-1 text-sm">
+                      {deck.missingCardsCount > 0 && (
+                        <p>Не открыты: {deck.cards.filter(card => deck.cardLevels[card] == null).join(', ')}</p>
+                      )}
+                      <p>До ур. {deck.upgrade.targetLevel} · {deck.upgrade.totalGold.toLocaleString('ru-RU')} золота · {deck.upgrade.neededCopies.toLocaleString('ru-RU')} копий</p>
+                      <Link className="text-blue-700 underline dark:text-blue-300" to={`/upgrade-plan?${new URLSearchParams({
+                        player: selectedPlayer, metaDeckId: deck.id, targetLevel: String(deck.upgrade.targetLevel),
+                      })}`}>Открыть план прокачки</Link>
+                    </div>
+                  )}
                 </motion.div>
               );
             })}
