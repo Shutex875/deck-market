@@ -46,6 +46,7 @@ model Player {
   collectionCheckError String?
   collectionAutoCheck Boolean @default(true)
   collectionPreview String?
+  resources String?
 
   @@unique([ownerId, name])
 }

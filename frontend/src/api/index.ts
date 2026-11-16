@@ -50,6 +50,15 @@ export interface Player {
   collectionCheckError?: string | null;
   collectionAutoCheck?: boolean;
   collectionPreview?: CollectionPreview | null;
+  resources?: PlayerResources;
+}
+
+export interface PlayerResources {
+  gold: number;
+  wildcards: Record<'Common' | 'Rare' | 'Epic' | 'Legendary' | 'Champion', number>;
+  universalShards: number;
+  evolutionShards: Record<string, number>;
+  heroCoins: number;
 }
 
 export interface CollectionPreview {
@@ -169,7 +178,7 @@ export interface RecommendResponse {
     cardLevels: Record<string, number | null>;
     averageLevel: number | null;
     missingCardsCount: number;
-    upgrade?: { targetLevel: number; totalGold: number; neededCopies: number };
+    upgrade?: UpgradeResourceSummary & { targetLevel: number; totalGold: number };
     score: number;
     bonus: number;
     tier: string | null;
@@ -192,7 +201,70 @@ export interface UpgradeDetail {
   steps: { level: number; gold: number; copies: number }[];
 }
 
-export interface DiagnoseResponse {
+export interface UpgradeResourceSummary {
+  goldDeficit: number;
+  neededCopies: number;
+  wildcardsCovered: number;
+  uncoveredCopies: number;
+  uncoveredCopiesByRarity: Record<string, number>;
+}
+
+export interface BudgetDeck extends UpgradeResourceSummary {
+  id: string;
+  name: string;
+  cards: string[];
+  details: UpgradeDetail[];
+  totalGold: number;
+  shardDeficit: number;
+  heroCoinDeficit: number;
+  missingData: string[];
+  currentScore: number;
+  projectedScore: number;
+  forms: {
+    card: string;
+    type: 'evolution' | 'hero';
+    unlocked: boolean;
+    specificShards: number;
+    universalShards: number;
+    missingShards: number;
+    heroCoins: number;
+  }[];
+}
+
+export interface BudgetRecommendation {
+  ready: BudgetDeck | null;
+  affordable: BudgetDeck | null;
+  prospective: BudgetDeck | null;
+}
+
+export const getUpgradeBudget = (playerName: string, targetLevel: number, signal: AbortSignal) =>
+  api.post<BudgetRecommendation>('/upgrade-budget', { playerName, targetLevel }, { signal }).then(res => res.data);
+
+export type SharedCardPriority = 'target' | 'budget';
+type SharedDeck = { id: string; name: string };
+export interface SharedCardUpgrade {
+  card: string;
+  fromLevel: number;
+  toLevel: number;
+  gold: number;
+  copies: number;
+  wildcardsUsed: number;
+  missingGold: number;
+  uncoveredCopies: number;
+  needsInput: string[];
+  affordable: boolean;
+  reached: SharedDeck[];
+  oneCardLeft: (SharedDeck & { card: string; level: number })[];
+  withinBudget: (SharedDeck & { gold: number })[];
+  closer: (SharedDeck & { remainingSteps: number })[];
+}
+
+export const getSharedCardUpgrades = (
+  playerId: string, targetLevel: number, priority: SharedCardPriority, signal: AbortSignal,
+) => api.post<SharedCardUpgrade[]>('/upgrade-shared-cards', { playerId, targetLevel, priority }, { signal })
+  .then(res => res.data);
+
+export interface DiagnoseResponse extends UpgradeResourceSummary {
   success: boolean;
   playerName: string;
   targetLevel: number;
@@ -202,12 +274,15 @@ export interface DiagnoseResponse {
 
 // === CW Response ===
 export type ClanWarMode = 'saved-first' | 'best';
-export interface ClanWarUpgradePlan {
+export interface ClanWarUpgradePlan extends UpgradeResourceSummary {
+  affordable: boolean;
+  shardDeficit: number;
+  heroCoinDeficit: number;
+  forms: BudgetDeck['forms'];
   targetLevel: number;
   totalGold: number;
   decks: { deckId: string; name: string; cards: string[] }[];
   missingCards: string[];
-  copiesByRarity: Record<string, number>;
 }
 
 export interface CWResponse {
@@ -260,7 +335,7 @@ export const deleteSavedDeck = (id: string, playerName: string) =>
   api.delete(`/saved-decks/${id}`, { params: { playerName } }).then(res => res.data);
 
 export const diagnoseDeck = (playerName: string, deckId: string, signal?: AbortSignal, targetLevel?: number, source?: 'saved' | 'meta') =>
-  api.post<{
+  api.post<UpgradeResourceSummary & {
     success: boolean;
     deckName: string;
     totalGold: number;
@@ -288,6 +363,13 @@ export const applyPlayerCollection = (id: string, previewId: string) =>
   api.post(`/players/${encodeURIComponent(id)}/collection/apply`, { previewId }).then(notifyPlayersChanged);
 export const getPlayer = (name: string, signal?: AbortSignal) =>
   api.get<Player>(`/players/${encodeURIComponent(name)}`, { signal }).then(res => res.data);
+export const getPlayerResources = (id: string, signal: AbortSignal) =>
+  api.get<PlayerResources>(`/players/${encodeURIComponent(id)}/resources`, { signal }).then(res => res.data);
+export const savePlayerResources = (id: string, resources: PlayerResources) =>
+  api.put<PlayerResources>(`/players/${encodeURIComponent(id)}/resources`, resources).then(res => {
+    notifyPlayersChanged();
+    return res.data;
+  });
 export const savePlayer = (data: Omit<Player, 'id' | 'createdAt' | 'updatedAt'>, existingName?: string) =>
   (existingName ? api.put(`/players/${encodeURIComponent(existingName)}`, data) : api.post<Player>('/players', data)).then(() => {
     notifyPlayersChanged();
@@ -312,6 +394,7 @@ export const createMetaDeck = (data: MetaDeckProvenance & {
   categoryId: string;
   sourceId: string;
   sourceUrl?: string;
+  duplicateConfirmation?: string;
 }) => api.post<MetaDeck>('/meta-decks', data).then(res => res.data);
 export const deleteMetaDeck = (id: string) => api.delete(`/meta-decks/${id}`).then(res => res.data);
 export const importDecksFromDeckshop = (category: string = 'popular') =>
@@ -335,9 +418,34 @@ export interface RecognizedDeckCard {
   isHero: boolean;
 }
 
-export const checkDeckDuplicates = (cards: string[], signal?: AbortSignal) =>
-  api.post<{ names: string[] }>('/meta-decks/check-duplicates', { cards }, { signal })
-    .then(res => res.data.names);
+export interface DeckDuplicateInput {
+  cards: (string | null)[];
+  slot2Type?: 'evo' | 'hero' | null;
+  editId?: string;
+  autofill?: boolean;
+}
+
+export type DeckMatch = {
+  id: string;
+  name: string;
+  location: 'meta' | 'saved';
+  playerName?: string;
+} & (
+  { kind: 'exact' | 'special-slots' } |
+  { kind: 'similar'; draftCard: string; existingCard: string }
+);
+
+export type DeckAutofillStats = Pick<MetaDeck,
+  'id' | 'name' | 'tier' | 'winRate' | 'gameMode' | 'dataDate' | 'sampleSize' | 'categoryId' | 'sourceId' | 'sourceUrl'
+>;
+
+export interface DeckDuplicateResult {
+  matches: DeckMatch[];
+  suggestedStats?: DeckAutofillStats | null;
+}
+
+export const checkDeckDuplicates = (draft: DeckDuplicateInput, signal: AbortSignal) =>
+  api.post<DeckDuplicateResult>('/meta-decks/check-duplicates', draft, { signal }).then(res => res.data);
 
 export const recognizeDeckScreenshot = async (file: File, signal?: AbortSignal): Promise<RecognizedDeckCard[]> => {
   let uploadFile: Blob = file;
@@ -399,6 +507,7 @@ export const updateMetaDeck = (id: string, data: MetaDeckProvenance & {
   categoryId: string;
   sourceId: string;
   sourceUrl?: string;
+  duplicateConfirmation?: string;
 }) => api.put<MetaDeck>(`/meta-decks/${id}`, data).then(res => res.data);
 
 // === Categories ===

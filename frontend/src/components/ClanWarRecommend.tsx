@@ -1,4 +1,6 @@
 import { useActivePlayer } from '../context/ActivePlayer';
+import PlayerResourceLink from './PlayerResourceLink';
+import UpgradeCopyCoverage from './UpgradeCopyCoverage';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -67,7 +69,13 @@ const rarityLabels: Record<string, string> = {
 function ClanWarPlanDetails({ plan }: { plan: ClanWarUpgradePlan }) {
   return (
     <>
+      <p className={`mb-2 text-sm font-semibold ${plan.affordable
+        ? 'text-green-700 dark:text-green-300' : 'text-amber-800 dark:text-amber-300'}`}>
+        {plan.affordable ? 'Все четыре колоды покрыты известными ресурсами' : 'Ближайшая связка по стоимости золота'}
+      </p>
       <p className="mb-2 text-sm">До ур. {plan.targetLevel} · {plan.totalGold.toLocaleString('ru-RU')} золота</p>
+      <p className="mb-2 text-sm">{plan.goldDeficit > 0
+        ? `Не хватает золота: ${plan.goldDeficit.toLocaleString('ru-RU')}` : 'Золота хватает'}</p>
       <ul className="space-y-2">
         {plan.decks.map(deck => <li key={deck.deckId}>
           <strong>{deck.name}</strong>
@@ -75,15 +83,28 @@ function ClanWarPlanDetails({ plan }: { plan: ClanWarUpgradePlan }) {
         </li>)}
       </ul>
       {plan.missingCards.length > 0 && <p className="mt-3 text-sm">Не открыты: {plan.missingCards.join(', ')}</p>}
-      <p className="mt-3 text-sm font-semibold">Нужно копий по редкости</p>
-      <p className="text-xs text-gray-600 dark:text-gray-300">Расчёт по уровням карт. Запасы копий и джокеров не учтены.</p>
-      {Object.keys(plan.copiesByRarity).length ? (
-        <ul className="text-sm">
-          {Object.entries(rarityLabels).filter(([rarity]) => plan.copiesByRarity[rarity]).map(([rarity, label]) => (
-            <li key={rarity}>{label}: {plan.copiesByRarity[rarity].toLocaleString('ru-RU')}</li>
+      <div className="mt-3"><UpgradeCopyCoverage {...plan} /></div>
+      {plan.uncoveredCopies > 0 && (
+        <ul className="text-sm" aria-label="Не покрыто джокерами по редкости">
+          {Object.entries(rarityLabels).filter(([rarity]) => plan.uncoveredCopiesByRarity[rarity]).map(([rarity, label]) => (
+            <li key={rarity}>{label}: {plan.uncoveredCopiesByRarity[rarity].toLocaleString('ru-RU')}</li>
           ))}
         </ul>
-      ) : <p className="text-sm">Дополнительные копии не нужны.</p>}
+      )}
+      {plan.forms.length > 0 && (
+        <details className="mt-3 text-sm">
+          <summary className="cursor-pointer font-medium">Открыть особые формы</summary>
+          <ul className="mt-2 space-y-1">
+            {plan.forms.map(form => <li key={`${form.card}-${form.type}`}>
+              {form.card} · {form.type === 'hero' ? `${form.heroCoins} монет героя`
+                : `${form.specificShards} своих + ${form.universalShards} универсальных осколков${form.missingShards
+                  ? ` · не хватает ${form.missingShards}` : ''}`}
+            </li>)}
+          </ul>
+        </details>
+      )}
+      {plan.shardDeficit > 0 && <p className="mt-2 text-sm">Не хватает осколков: {plan.shardDeficit}</p>}
+      {plan.heroCoinDeficit > 0 && <p className="mt-2 text-sm">Не хватает монет героя: {plan.heroCoinDeficit}</p>}
     </>
   );
 }
@@ -349,7 +370,7 @@ const ClanWarRecommend: React.FC<{ upgrade?: boolean }> = ({ upgrade = false }) 
         isDark ? 'bg-gray-800' : 'bg-white'
       }`}>
         <div className="flex flex-wrap items-end gap-4">
-          {selectedPlayer && <p className="text-sm">Аккаунт <strong>{selectedPlayer}</strong></p>}
+          <PlayerResourceLink player={activePlayer} used={upgrade} />
           <label className="flex flex-col gap-1 text-sm font-medium">
             Режим подбора
             <select value={mode} className="rounded border p-2 dark:border-gray-600 dark:bg-gray-700"

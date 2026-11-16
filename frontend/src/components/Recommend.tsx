@@ -1,4 +1,6 @@
 import { useActivePlayer } from '../context/ActivePlayer';
+import PlayerResourceLink from './PlayerResourceLink';
+import UpgradeCopyCoverage from './UpgradeCopyCoverage';
 import { Link } from 'react-router-dom';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useState, useEffect, useRef } from 'react';
@@ -206,7 +208,7 @@ const Recommend: React.FC = () => {
 
       <div className={`p-4 rounded-lg shadow mb-6 transition-colors duration-200 ${isDark ? 'bg-gray-800' : 'bg-white'}`}>
         <div className="flex flex-wrap items-end gap-4">
-          {selectedPlayer && <p className="text-sm">Аккаунт <strong>{selectedPlayer}</strong></p>}
+          <PlayerResourceLink player={activePlayer} used={mode === 'prospective'} />
           <div>
             <label className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
               Кол-во колод
@@ -475,7 +477,10 @@ const Recommend: React.FC = () => {
                       {deck.missingCardsCount > 0 && (
                         <p>Не открыты: {deck.cards.filter(card => deck.cardLevels[card] == null).join(', ')}</p>
                       )}
-                      <p>До ур. {deck.upgrade.targetLevel} · {deck.upgrade.totalGold.toLocaleString('ru-RU')} золота · {deck.upgrade.neededCopies.toLocaleString('ru-RU')} копий</p>
+                      <p>До ур. {deck.upgrade.targetLevel} · {deck.upgrade.totalGold.toLocaleString('ru-RU')} золота</p>
+                      <UpgradeCopyCoverage {...deck.upgrade} />
+                      {deck.upgrade.goldDeficit > 0 && <p>Не хватает золота: {deck.upgrade.goldDeficit.toLocaleString('ru-RU')}</p>}
+                      {!deck.upgrade.goldDeficit && !deck.upgrade.uncoveredCopies && <p>Прокачка уровней покрыта известными ресурсами.</p>}
                       <Link className="text-blue-700 underline dark:text-blue-300" to={`/upgrade-plan?${new URLSearchParams({
                         player: selectedPlayer, metaDeckId: deck.id, targetLevel: String(deck.upgrade.targetLevel),
                       })}`}>Открыть план прокачки</Link>

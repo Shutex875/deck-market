@@ -15,6 +15,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { refreshPlayers, deletePlayer, Player } from '../api';
 import CollectionSync from './CollectionSync';
+import { playerResourcesPath } from './PlayerResourceLink';
 import { useTheme } from '../context/ThemeContext';
 import { isHeroUpgradeId } from '../utils/clashRoyaleAccountSync';
 
@@ -270,6 +271,10 @@ const PlayerList: React.FC = () => {
                 <div className={`mt-3 flex flex-wrap gap-2 border-t pt-3 ${
                   isDark ? 'border-gray-700' : 'border-gray-200'
                 }`}>
+                  <Link to={playerResourcesPath(player.name)}
+                    className="inline-flex items-center gap-1 rounded bg-blue-50 px-2 py-1 text-xs text-blue-700 hover:bg-blue-100 dark:bg-gray-700 dark:text-blue-300">
+                    Ресурсы
+                  </Link>
                   {player.tag?.trim() && (
                     <Link
                       to={`/player-stats?tag=${encodeURIComponent(player.tag.trim())}`}

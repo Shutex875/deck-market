@@ -2,7 +2,7 @@ import { useActivePlayer } from '../context/ActivePlayer';
 import ProfileSwitcher from './ProfileSwitcher';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as Dialog from '@radix-ui/react-dialog';
 import { isAxiosError } from 'axios';
@@ -21,11 +21,13 @@ import {
   PhotoIcon,
   ArrowUpTrayIcon,
 } from '@heroicons/react/24/outline';
-import { metaDataLabels, getMetaDecks, deleteMetaDeck, getCategories, Category, saveDeck, transferSavedDeck, deleteSavedDeck, checkDeckDuplicates, recognizeDeckScreenshot, RecognizedDeckCard, MetaDeckSortBy, SortOrder, importMockDecks, type MetaDeckFull } from '../api';
+import { metaDataLabels, getMetaDecks, deleteMetaDeck, getCategories, Category, saveDeck, transferSavedDeck, deleteSavedDeck, recognizeDeckScreenshot, RecognizedDeckCard, MetaDeckSortBy, SortOrder, importMockDecks, type MetaDeckFull } from '../api';
 import { CardIcon } from '../utils/cardImages';
 import { ALL_CARDS_DATA } from '../data/cards';
 import { useTheme } from '../context/ThemeContext';
 import DeckFilterModal from './DeckFilterModal';
+import DeckMatches, { deckMatchLink, useDeckMatches } from './DeckMatches';
+import DeckScreenshot from './DeckScreenshot';
 
 type CatalogDeck = Omit<MetaDeckFull, 'cards'> & { cards: string[]; composition: string };
 
@@ -42,10 +44,55 @@ function parseDeckCards(value: string): string[] {
 
 const deckComposition = (cards: string[]) => JSON.stringify([...cards].sort());
 
+function screenshotDeckDraft(recognized: RecognizedDeckCard[]) {
+  const original = recognized.map(card => card.id);
+  if (original.length !== 8 || new Set(original).size !== 8) return { cards: original };
+
+  const evolutions = recognized.filter(card => card.isEvolution);
+  const heroes = recognized.filter(card => card.isChampion || (card.isHero && !card.isEvolution));
+  const special: (RecognizedDeckCard | undefined)[] = [];
+  const place = (forms: RecognizedDeckCard[], primary: number) => {
+    const first = forms.find(card => card === recognized[primary]) ?? forms[0];
+    if (!first) return;
+    if (forms.length === 1 && first === recognized[2] && !special[2]) {
+      special[2] = first;
+    } else {
+      special[primary] = first;
+      special[2] ??= forms.find(card => card !== first);
+    }
+  };
+  // Two heroes/champions need both hero-capable slots. Otherwise preserve both evolutions first.
+  if (heroes.length > 1) {
+    place(heroes, 1);
+    place(evolutions, 0);
+  } else if (evolutions.length > 1) {
+    place(evolutions, 0);
+    place(heroes, 1);
+  } else {
+    place(heroes, 1);
+    place(evolutions, 0);
+  }
+  const ordered = [...recognized];
+  special.forEach((card, index) => {
+    if (!card) return;
+    const from = ordered.indexOf(card);
+    [ordered[index], ordered[from]] = [ordered[from], ordered[index]];
+  });
+  const third = special[2];
+  return {
+    cards: ordered.map(card => card.id),
+    slot2Type: third?.isEvolution ? 'evo' as const :
+      third?.isHero && !third.isChampion ? 'hero' as const : null,
+    reordered: ordered.some((card, index) => card !== recognized[index]),
+  };
+}
+
 const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ canManageCatalog, latest = false }) => {
   const { theme } = useTheme();
   const isDark = theme === 'dark';
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
+  const openedDeck = latest ? null : params.get('deck');
   const screenshotInputRef = useRef<HTMLInputElement>(null);
 
   const [decks, setDecks] = useState<MetaDeckFull[] | null>(null);
@@ -65,19 +112,11 @@ const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ c
   const [screenshotFile, setScreenshotFile] = useState<File | null>(null);
   const [screenshotCards, setScreenshotCards] = useState<RecognizedDeckCard[]>([]);
   const [screenshotError, setScreenshotError] = useState('');
-  const [duplicateCheck, setDuplicateCheck] = useState<{
-    cards: RecognizedDeckCard[];
-    names: string[] | null;
-  } | null>(null);
-  const [duplicateRetry, setDuplicateRetry] = useState(0);
   const [recognizingScreenshot, setRecognizingScreenshot] = useState(false);
   const recognitionRequest = useRef<AbortController | null>(null);
-  const hasUniqueScreenshotCards = screenshotCards.length === 8 &&
-    new Set(screenshotCards.map(card => card.id)).size === 8;
-  const currentDuplicateCheck = duplicateCheck?.cards === screenshotCards ? duplicateCheck : null;
-  const screenshotDuplicates = currentDuplicateCheck?.names ?? [];
-  const checkingScreenshotDuplicates = hasUniqueScreenshotCards && !currentDuplicateCheck;
-  const canContinueScreenshot = hasUniqueScreenshotCards && currentDuplicateCheck?.names?.length === 0;
+  const screenshotDraft = screenshotDeckDraft(screenshotCards);
+  const duplicateCheck = useDeckMatches(screenshotDraft);
+  const exactMatch = duplicateCheck.matches.find(match => match.kind === 'exact');
 
   // Фильтр по картам
   const [includeCards, setIncludeCards] = useState<string[]>([]);
@@ -160,21 +199,6 @@ const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ c
 
   useEffect(() => () => recognitionRequest.current?.abort(), []);
 
-  useEffect(() => {
-    if (!hasUniqueScreenshotCards) return;
-    const request = new AbortController();
-    checkDeckDuplicates(screenshotCards.map(card => card.id), request.signal)
-      .then(names => {
-        if (!request.signal.aborted) setDuplicateCheck({ cards: screenshotCards, names });
-      })
-      .catch(error => {
-        if (request.signal.aborted) return;
-        console.error(error);
-        setDuplicateCheck({ cards: screenshotCards, names: null });
-      });
-    return () => request.abort();
-  }, [screenshotCards, hasUniqueScreenshotCards, duplicateRetry]);
-
   const handleScreenshotFile = (file?: File) => {
     if (!file) return;
     if (!file.type.startsWith('image/')) {
@@ -229,7 +253,7 @@ const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ c
       elixirCost: null,
       isEvolution: false,
       isChampion: Boolean(cardData?.champion),
-      isHero: Boolean(cardData?.heroFile),
+      isHero: false,
     };
     setScreenshotCards(updatedCards);
   };
@@ -370,8 +394,8 @@ const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ c
   }, [catalog]);
   const nameQuery = search.trim().toLocaleLowerCase();
   const hasFilters = Boolean(nameQuery || filter !== 'all' || sourceFilter || tierFilter || favoritesOnly || hasActiveCardFilter);
-  const checkingFavorites = favoritesOnly && saved.loading;
-  const filteredDecks = useMemo(() => catalog.filter(deck =>
+  const checkingFavorites = !openedDeck && favoritesOnly && saved.loading;
+  const filteredDecks = useMemo(() => catalog.filter(deck => openedDeck ? deck.id === openedDeck :
     deck.name.toLocaleLowerCase().includes(nameQuery) &&
     (filter === 'all' || deck.categoryId === filter) &&
     (!sourceFilter || deck.sourceId === sourceFilter) &&
@@ -379,7 +403,7 @@ const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ c
     (!favoritesOnly || (deck.cards.length === 8 && savedCompositions.has(deck.composition))) &&
     includeCards.every(cardId => deck.cards.includes(cardId)) &&
     !excludeCards.some(cardId => deck.cards.includes(cardId))
-  ), [catalog, nameQuery, filter, sourceFilter, tierFilter, favoritesOnly, savedCompositions, includeCards, excludeCards]);
+  ), [catalog, nameQuery, filter, sourceFilter, tierFilter, favoritesOnly, savedCompositions, includeCards, excludeCards, openedDeck]);
   const filterControlClass = 'rounded border border-gray-300 bg-white px-3 py-1.5 text-sm dark:border-gray-600 dark:bg-gray-700';
 
   const getCustomSrc = (cardId: string, slotIndex: number, slot2Type?: 'evo' | 'hero' | null) => {
@@ -580,7 +604,8 @@ const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ c
             </button>
           </div>
         </details>
-        {decks && hasFilters && !checkingFavorites && !(favoritesOnly && saved.error) && (
+        {openedDeck && <button className="mb-3 underline" onClick={() => setParams({})}>Показать весь мета-каталог</button>}
+        {decks && !openedDeck && hasFilters && !checkingFavorites && !(favoritesOnly && saved.error) && (
           <span role="status" className="ml-auto text-sm text-gray-600 dark:text-gray-400">
             Показано {filteredDecks.length} из {decks.length}
           </span>
@@ -588,7 +613,7 @@ const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ c
       </div>
 
       <AnimatePresence mode="wait">
-        {checkingFavorites || (favoritesOnly && saved.error) ? (
+        {checkingFavorites || (!openedDeck && favoritesOnly && saved.error) ? (
           <p key="favorites-status" role={saved.error ? 'alert' : 'status'} className="py-8 text-center">
             {saved.error || 'Загрузка избранного…'}
           </p>
@@ -600,7 +625,7 @@ const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ c
             exit={{ opacity: 0, y: -10 }}
             className={`text-center py-8 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}
           >
-            {decks ? 'Нет колод, соответствующих фильтрам' : 'Не удалось загрузить мета-колоды'}
+            {decks ? (openedDeck ? 'Колода не найдена' : 'Нет колод, соответствующих фильтрам') : 'Не удалось загрузить мета-колоды'}
           </motion.div>
         ) : (
           <motion.div
@@ -778,7 +803,7 @@ const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ c
                   <Dialog.Title className="mb-2 text-xl font-bold">Распознать колоду по скриншоту</Dialog.Title>
                   <p className={`mb-4 text-sm ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
                     Выберите или перетащите изображение с сеткой карт 2×4. Можно вставить картинку из буфера через Ctrl+V.
-                    Распознавание выполняется локально; проверьте предложенные карты перед продолжением.
+                    Проверьте карты перед продолжением.
                   </p>
 
                   <input
@@ -809,62 +834,41 @@ const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ c
                     </button>
                   </div>
 
-                  {screenshotUrl && (
-                    <img
-                      src={screenshotUrl}
-                      alt="Загруженный скриншот колоды"
-                      className="mb-4 max-h-64 max-w-full rounded-lg border border-gray-500 object-contain"
-                    />
-                  )}
                   {screenshotError && (
                     <div role="alert" className="mb-4 rounded border border-amber-500/50 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-300">
                       {screenshotError}
                     </div>
                   )}
-                  {checkingScreenshotDuplicates && (
-                    <p className="mb-3 text-sm">Проверяю мета-колоды и сохранённые колоды аккаунтов…</p>
-                  )}
-                  {currentDuplicateCheck?.names === null && (
-                    <div role="alert" className="mb-4 text-sm">
-                      Не удалось проверить дубликаты.{' '}
-                      <button type="button" className="underline" onClick={() => {
-                        setDuplicateCheck(null);
-                        setDuplicateRetry(attempt => attempt + 1);
-                      }}>Повторить проверку</button>
-                    </div>
-                  )}
-                  {screenshotDuplicates.length > 0 && (
-                    <div role="status" className="mb-4 rounded border border-amber-500/50 bg-amber-500/10 p-3 text-sm">
-                      {screenshotDuplicates.map(name => (
-                        <div key={name}>Такая колода уже есть в системе: <strong>{name}</strong></div>
-                      ))}
-                    </div>
-                  )}
-                  {screenshotCards.length > 0 && (
-                    <>
-                      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  {screenshotUrl && (
+                    <div className="mb-4 grid items-start gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+                      <DeckScreenshot url={screenshotUrl} />
+                      {screenshotCards.length > 0 && <div className="grid grid-cols-4 gap-2">
                         {screenshotCards.map((recognizedCard, index) => (
                           <label
                             key={index}
-                            className={`flex min-w-0 flex-col items-center gap-2 rounded-lg border p-3 ${
+                            className={`flex min-w-0 flex-col items-center gap-1 rounded-lg border p-1 sm:p-2 ${
                               isDark ? 'border-gray-600 bg-gray-700' : 'border-gray-200 bg-gray-50'
                             }`}
                           >
                             <CardIcon
+                              key={recognizedCard.id}
                               cardId={recognizedCard.id}
-                              className="h-16 w-16"
+                              className="h-12 w-12 max-w-full sm:h-16 sm:w-16"
                               customSrc={
                                 recognizedCard.isEvolution
                                   ? `/cards/Evo/${ALL_CARDS_DATA.find(card => card.id === recognizedCard.id)?.evoFile}.webp`
-                                  : undefined
+                                  : recognizedCard.isHero
+                                    ? '/cards/Hero/' + cardsById.get(recognizedCard.id)?.heroFile + '.webp'
+                                    : undefined
                               }
                             />
                             <span className="text-xs">Слот {index + 1}</span>
-                            <span className="text-center text-sm font-medium">{recognizedCard.name}</span>
+                            <span className="break-words text-center text-xs font-medium sm:text-sm">{recognizedCard.name}</span>
                             <span className="text-xs text-violet-500">
-                              {recognizedCard.isEvolution ? 'Эволюция' : recognizedCard.isChampion ? 'Чемпион' : ''}
+                              {recognizedCard.isEvolution ? 'Эволюция' : recognizedCard.isHero ? 'Герой' : recognizedCard.isChampion ? 'Чемпион' : ''}
                             </span>
                             <select
+                              aria-label={'Заменить карту в слоте ' + (index + 1)}
                               value={recognizedCard.id}
                               onChange={event => handleScreenshotCardChange(index, event.target.value)}
                               className={`w-full rounded border px-2 py-1 text-xs ${
@@ -877,7 +881,14 @@ const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ c
                             </select>
                           </label>
                         ))}
-                      </div>
+                      </div>}
+                    </div>
+                  )}
+                  <DeckMatches check={duplicateCheck} onOpen={closeScreenshotModal} />
+                  {screenshotCards.length > 0 && !duplicateCheck.complete && (
+                    <p className="mb-3 text-sm text-amber-600">Выберите восемь уникальных карт.</p>
+                  )}
+                  {screenshotCards.length > 0 && (
                       <div className="flex flex-wrap justify-end gap-2">
                         <button
                           onClick={closeScreenshotModal}
@@ -885,44 +896,27 @@ const DeckList: React.FC<{ canManageCatalog: boolean; latest?: boolean }> = ({ c
                         >
                           Отмена
                         </button>
+                        {exactMatch && <Link to={deckMatchLink(exactMatch)} onClick={closeScreenshotModal} className="rounded bg-blue-600 px-4 py-2 text-white">Открыть существующую</Link>}
                         <button
                           onClick={() => {
-                            const featuredCards = screenshotCards.filter(
-                              card => card.isChampion || card.isEvolution
-                            );
-                            const titleCards = featuredCards.length > 0
-                              ? featuredCards
-                              : [...screenshotCards]
-                                  .sort((left, right) => (right.elixirCost ?? 0) - (left.elixirCost ?? 0))
-                                  .slice(0, 3);
-                            const generatedName = titleCards.map(card => {
-                              const cardData = ALL_CARDS_DATA.find(item => item.id === card.id);
-                              if (!cardData) return card.id.replace(/[^a-zA-Z0-9]/g, '');
-                              if (card.isEvolution) return `Evo${cardData.evoFile || cardData.file}`;
-                              return cardData.file;
-                            }).join(' ');
                             navigate('/decks/new', {
                               state: {
-                                prefillCards: screenshotCards.map(card => card.id),
-                                prefillSlot2Type: screenshotCards[2]?.isEvolution ? 'evo' : undefined,
-                                prefillName: generatedName,
+                                prefillCards: screenshotDraft.cards,
+                                prefillSlot2Type: screenshotDraft.slot2Type,
+                                screenshotFile,
+                                screenshotSlotsReordered: screenshotDraft.reordered,
                                 prefillCategoryName: 'general',
                                 prefillSourceName: 'PrtScn',
                               },
                             });
                             closeScreenshotModal();
                           }}
-                          disabled={!canContinueScreenshot}
-                          className={`rounded px-4 py-2 text-white ${
-                            !canContinueScreenshot
-                              ? 'cursor-not-allowed bg-green-400 opacity-60'
-                              : 'bg-green-600 hover:bg-green-700'
-                          }`}
+                          disabled={!duplicateCheck.complete || duplicateCheck.checking || duplicateCheck.failed}
+                          className={exactMatch ? 'rounded border px-4 py-2' : 'rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50'}
                         >
-                          Продолжить в форму создания
+                          {exactMatch ? 'Продолжить с вариантом' : 'Открыть конструктор'}
                         </button>
                       </div>
-                    </>
                   )}
                 </motion.div>
               </Dialog.Content>

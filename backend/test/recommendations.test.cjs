@@ -13,6 +13,8 @@ function request(path, body, prisma, createRouter = createRecommendationsRouter,
     (!options.method || layer.route.methods[options.method])).route;
   const response = { statusCode: 200 };
   const res = {
+    on() {},
+    off() {},
     locals: { user: { id: 'user-a', username: 'catalog-admin', canManageCatalog: options.canManageCatalog ?? true } },
     status(code) {
       response.statusCode = code;
@@ -23,7 +25,7 @@ function request(path, body, prisma, createRouter = createRecommendationsRouter,
       return this;
     },
   };
-  const req = { body, ...options };
+  const req = { body, on() {}, off() {}, ...options };
   async function run(index) {
     let next;
     await route.stack[index].handle(req, res, () => { next = run(index + 1); });
@@ -387,37 +389,191 @@ test('meta recommendations validate and apply provenance filters before ranking'
   assert.equal(result.body.decks[0].sampleSize, 200);
 });
 
-test('duplicate check matches compositions across both catalogs with two database reads', async () => {
-  const cards = ['Knight', 'Archers', 'Skeleton', 'Ice Spirit', 'Fireball', 'Cannon', 'Hog Rider', 'Valkyrie'];
-  const path = '/meta-decks/check-duplicates';
+const duplicateCards = ['Knight', 'Ice Spirit', 'The Log', 'Skeleton', 'Fireball', 'Cannon', 'Hog Rider', 'Valkyrie'];
+const checkDuplicatesPath = '/meta-decks/check-duplicates';
+const metaDeck = (id, cards, slot2Type = null) => ({ id, name: id, cards: JSON.stringify(cards), slot2Type });
+
+test('duplicate check compares normalized bases, describes slots and one-card differences, and excludes the edited row', async () => {
+  const [knight, ice, log, ...rest] = duplicateCards;
   const queries = [];
   const prisma = {
-    metaDeck: {
-      findMany: async query => {
-        queries.push(query);
-        return [
-          { name: 'Meta', cards: JSON.stringify(cards) },
-          { name: 'Malformed', cards: '[' },
-        ];
-      },
-    },
-    savedDeck: {
-      findMany: async query => {
-        queries.push(query);
-        return [
-          { name: 'Meta', cards: JSON.stringify(cards) },
-          { name: 'Saved', cards: JSON.stringify([...cards].reverse()) },
-          { name: 'Different', cards: JSON.stringify([...cards.slice(1), 'Goblins']) },
-        ];
-      },
-    },
+    metaDeck: { findMany: async query => {
+      queries.push(query);
+      return [
+        metaDeck('exact', [knight, ice, log, ...rest]),
+        metaDeck('special', [ice, knight, log, ...rest]),
+        metaDeck('similar', [knight, ice, log, ...rest.slice(0, -1), 'Goblins']),
+        { id: 'malformed', cards: '[' },
+      ];
+    } },
+    savedDeck: { findMany: async query => {
+      queries.push(query);
+      return [{ id: 'saved', name: 'Saved', cards: JSON.stringify(duplicateCards),
+        player: { name: 'Twink', evolutions: '["Knight"]', heroes: '[]' } }];
+    } },
   };
-  const invalid = await request(path, { cards: Array(8).fill('Knight') }, prisma, createMetaDecksRouter);
-  assert.equal(invalid.statusCode, 400);
+  const check = body => request(checkDuplicatesPath, body, prisma, createMetaDecksRouter);
+  assert.equal((await check({ cards: [knight, ice, log, 'Log', ...rest.slice(1)] })).statusCode, 400);
   assert.equal(queries.length, 0);
-  const result = await request(path, { cards: [...cards].reverse() }, prisma, createMetaDecksRouter);
-  assert.deepEqual(result, { statusCode: 200, body: { names: ['Meta', 'Saved'] } });
-  assert.deepEqual(queries.map(query => query.select), [{ cards: true, name: true }, { cards: true, name: true }]);
+  const cards = [knight, ice, 'Log', ...rest.toReversed()];
+  const result = await check({ cards });
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(result.body.matches, [
+    { id: 'exact', name: 'exact', location: 'meta', kind: 'exact' },
+    { id: 'saved', name: 'Saved', location: 'saved', playerName: 'Twink', kind: 'exact' },
+    { id: 'special', name: 'special', location: 'meta', kind: 'special-slots' },
+    { id: 'similar', name: 'similar', location: 'meta', kind: 'similar', draftCard: 'Valkyrie', existingCard: 'Goblins' },
+  ]);
+  assert.equal(queries.length, 2);
+  assert.deepEqual(queries[1].where, { player: { ownerId: 'user-a' } });
+  const edit = await check({ cards, editId: 'exact' });
+  assert.equal(edit.body.matches.some(match => match.id === 'exact'), false);
+  assert.deepEqual(queries[2].where, { id: { not: 'exact' } });
+
+  const dualForm = [ice, log, knight, ...rest];
+  const formCatalog = {
+    metaDeck: { findMany: async () => [metaDeck('Evolved Knight', dualForm, 'evo')] },
+    savedDeck: { findMany: async () => [] },
+  };
+  const hero = await request(checkDuplicatesPath, { cards: dualForm, slot2Type: 'hero' }, formCatalog, createMetaDecksRouter);
+  assert.equal(hero.body.matches[0].kind, 'special-slots');
+});
+
+test('deck autofill copies statistics only from a published exact variant', async () => {
+  const stats = { id: 'exact', name: 'Catalog deck', winRate: 0, sampleSize: 64, dataDate: '2026-11-15',
+    sourceId: 'source', categoryId: 'category', sourceUrl: null, tier: 'A', gameMode: 'Ranked' };
+  const rows = [
+    metaDeck('exact', duplicateCards),
+    metaDeck('different-slots', [duplicateCards[1], duplicateCards[0], ...duplicateCards.slice(2)]),
+    metaDeck('similar', [...duplicateCards.slice(0, 7), 'Goblins']),
+  ];
+  let lookups = 0;
+  const prisma = {
+    metaDeck: {
+      findMany: async () => rows,
+      findFirst: async query => {
+        lookups++;
+        assert.deepEqual(query.where, {
+          id: { in: ['exact'] }, isActive: true, dataKind: 'match-stats', winRate: { gte: 0, lte: 100 },
+        });
+        assert.deepEqual(query.orderBy, [{ dataDate: 'desc' }, { sampleSize: 'desc' }, { id: 'asc' }]);
+        return stats;
+      },
+    },
+    savedDeck: { findMany: async () => [] },
+  };
+  const result = await request(checkDuplicatesPath, { cards: duplicateCards, autofill: true }, prisma, createMetaDecksRouter);
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(result.body.suggestedStats, stats);
+  rows.shift();
+  const unmatched = await request(checkDuplicatesPath, { cards: duplicateCards, autofill: true }, prisma, createMetaDecksRouter);
+  assert.equal(unmatched.body.suggestedStats, null);
+  assert.equal(lookups, 1);
+});
+
+test('catalog saves recheck the composition, require variant confirmation, and allow near matches and self-edits', async () => {
+  const rows = [metaDeck('Existing', duplicateCards)];
+  let writes = 0;
+  const tx = {
+    metaDeck: {
+      findMany: async () => rows,
+      findUnique: async ({ where }) => rows.find(deck => deck.id === where.id),
+      create: async ({ data }) => { writes++; return data; },
+      update: async ({ data }) => { writes++; return data; },
+    },
+    savedDeck: { findMany: async () => [] },
+  };
+  const prisma = { $transaction: callback => callback(tx) };
+  const draft = { name: 'Variant', cards: duplicateCards, categoryId: 'category', sourceId: 'source' };
+  const create = (changes = {}) => request('/meta-decks', { ...draft, ...changes }, prisma, createMetaDecksRouter,
+    { method: 'post' });
+  const conflict = await create();
+  assert.equal(conflict.statusCode, 409);
+  assert.equal(conflict.body.matches[0].kind, 'exact');
+  assert.equal(writes, 0);
+  const duplicateConfirmation = conflict.body.duplicateConfirmation;
+  assert.ok(duplicateConfirmation);
+  assert.equal((await create({ name: 'Another variant', duplicateConfirmation })).statusCode, 409);
+  assert.equal((await create({ name: 'Existing' })).body.duplicateConfirmation, undefined);
+  assert.equal((await create({ duplicateConfirmation })).statusCode, 200);
+  assert.equal((await create({ cards: [...duplicateCards.slice(0, 7), 'Goblins'] })).statusCode, 200);
+  const edit = await request('/meta-decks/:id', { ...draft, name: 'Existing' }, prisma, createMetaDecksRouter,
+    { method: 'put', params: { id: 'Existing' } });
+  assert.equal(edit.statusCode, 200);
+  assert.equal(writes, 3);
+});
+
+test('recognition returns an editable draft with repeated cards and checks the corrected composition', async t => {
+  const previousKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'fixture';
+  t.after(() => {
+    if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousKey;
+  });
+  const misread = [...duplicateCards];
+  misread[5] = misread[1];
+  t.mock.method(globalThis, 'fetch', async () => Response.json({
+    candidates: [{ content: { parts: [{ text: JSON.stringify({
+      cards: misread.map(id => ({ id, elixirCost: 1 })),
+    }) }] } }],
+  }));
+  const result = await request('/meta-decks/recognize-image', { image: 'data:image/png;base64,AA==' }, {}, createMetaDecksRouter);
+  assert.equal(result.statusCode, 200);
+  assert.deepEqual(result.body.cards.map(card => card.id), misread);
+  const corrected = result.body.cards.map(card => card.id);
+  corrected[5] = duplicateCards[5];
+  const catalog = { metaDeck: { findMany: async () => [metaDeck('Existing', duplicateCards)] },
+    savedDeck: { findMany: async () => [] } };
+  const check = await request(checkDuplicatesPath, { cards: corrected }, catalog, createMetaDecksRouter);
+  assert.equal(check.body.matches[0].kind, 'exact');
+});
+
+test('Gemini recognition requests eight structured cards and reads alternate JSON envelopes', async t => {
+  const names = ['GEMINI_API_KEY', 'GEMINI_VISION_MODEL', 'GEMINI_MODELS'];
+  const previous = names.map(name => process.env[name]);
+  process.env.GEMINI_API_KEY = 'fixture';
+  process.env.GEMINI_VISION_MODEL = 'first-model';
+  process.env.GEMINI_MODELS = 'fallback-model';
+  t.after(() => names.forEach((name, index) => {
+    if (previous[index] === undefined) delete process.env[name];
+    else process.env[name] = previous[index];
+  }));
+
+  const cards = duplicateCards.map(id => ({ id, name: id, elixirCost: 1, isEvolution: false, isHero: false }));
+  const json = JSON.stringify({ cards });
+  const fence = String.fromCharCode(96).repeat(3);
+  const responses = [];
+  const models = [];
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    models.push(url.match(/\/models\/([^:]+):/)[1]);
+    const config = JSON.parse(options.body).generationConfig;
+    assert.equal(config.responseMimeType, 'application/json');
+    assert.equal(config.temperature, 0.1);
+    assert.ok(config.maxOutputTokens > 256);
+    assert.equal(config.responseJsonSchema.properties.cards.minItems, 8);
+    assert.equal(config.responseJsonSchema.properties.cards.maxItems, 8);
+    assert.ok(config.responseJsonSchema.properties.cards.items.required.includes('isHero'));
+    const response = responses.shift();
+    return Response.json({ candidates: [{ finishReason: response.reason ?? 'STOP', content: { parts: [
+      { thought: true, text: 'Internal commentary' },
+      { text: response.text },
+    ] } }] });
+  });
+
+  const recognize = () => request('/meta-decks/recognize-image', { image: 'data:image/png;base64,AA==' }, {}, createMetaDecksRouter);
+  for (const text of [json, 'Result:\n' + fence + 'json\n' + json + '\n' + fence + '\nDone.',
+      'Result: ' + json + ' Done.', JSON.stringify(cards)]) {
+    responses.push({ text });
+    const result = await recognize();
+    assert.equal(result.statusCode, 200);
+    assert.deepEqual(result.body.cards.map(card => card.id), duplicateCards);
+  }
+  responses.push({ text: json.slice(0, 200), reason: 'MAX_TOKENS' }, { text: json });
+  assert.equal((await recognize()).statusCode, 200);
+  assert.deepEqual(models.slice(-2), ['first-model', 'fallback-model']);
+  responses.push({ text: '{ invalid' }, { text: '{"cards":[null]}' });
+  assert.equal((await recognize()).statusCode, 502);
+  assert.equal(responses.length, 0);
 });
 
 test('Deckshop imports only new names and writes through one transaction per request', async t => {

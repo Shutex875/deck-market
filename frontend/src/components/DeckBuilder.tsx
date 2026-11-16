@@ -1,5 +1,6 @@
 import React, { useState, useEffect, memo, useCallback } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { isAxiosError } from 'axios';
 import {
   DndContext,
   closestCenter,
@@ -32,6 +33,7 @@ import {
   createMetaDeck,
   metaDataLabels,
   type MetaDeckProvenance,
+  type DeckMatch,
   updateMetaDeck,
   deleteMetaDeck,
   getMetaDeck,
@@ -48,8 +50,32 @@ import { ALL_CARDS_DATA, Rarity } from '../data/cards';
 import { cardTranslations } from '../utils/cardTranslations';
 import { CardIcon } from '../utils/cardImages';
 import { useTheme } from '../context/ThemeContext';
+import DeckMatches, { deckMatchLink, useDeckMatches } from './DeckMatches';
+import DeckScreenshot from './DeckScreenshot';
 
 type SlotType = 'evo' | 'hero' | 'normal';
+
+interface DeckFields {
+  name: string;
+  tier: string;
+  winRate: string;
+  dataKind: NonNullable<MetaDeckProvenance['dataKind']> | '';
+  gameMode: string;
+  dataDate: string;
+  sampleSize: string;
+  categoryId: string;
+  sourceId: string;
+  sourceUrl: string;
+}
+
+function suggestedDeckName(cards: (string | null)[], matches: DeckMatch[], referenceName?: string) {
+  const base = referenceName ? referenceName + ' · вариант' : cards.slice(0, 3)
+    .map(id => id ? cardTranslations[id] ?? id : '').join(' · ');
+  const occupied = new Set(matches.map(match => match.name));
+  let name = base;
+  for (let suffix = 2; occupied.has(name); suffix++) name = base + ' ' + suffix;
+  return name;
+}
 
 // Компонент карты внутри слота (перетаскиваемая)
 const DraggableCardInSlot = memo(({
@@ -82,9 +108,9 @@ const DraggableCardInSlot = memo(({
   } else if (slotIndex === 1 && card.heroFile) {
     customSrc = `/cards/Hero/${card.heroFile}.webp`;
   } else if (slotIndex === 2) {
-    if (slot2Type === 'evo' && card.evoFile) {
+    if ((slot2Type === 'evo' || (!slot2Type && !card.heroFile)) && card.evoFile) {
       customSrc = `/cards/Evo/${card.evoFile}.webp`;
-    } else if (slot2Type === 'hero' && card.heroFile) {
+    } else if ((slot2Type === 'hero' || (!slot2Type && !card.evoFile)) && card.heroFile) {
       customSrc = `/cards/Hero/${card.heroFile}.webp`;
     }
   }
@@ -98,6 +124,7 @@ const DraggableCardInSlot = memo(({
       className="cursor-grab active:cursor-grabbing w-full h-full flex items-center justify-center"
     >
       <CardIcon
+        key={cardId + (customSrc ?? '')}
         cardId={cardId}
         className="w-16 h-16"
         customSrc={customSrc}
@@ -151,7 +178,7 @@ const Slot = memo(({
   return (
     <div
       ref={setNodeRef}
-      className={`relative w-20 h-24 rounded-lg flex flex-col items-center justify-center transition-colors duration-200 ${
+      className={`relative h-16 w-full max-w-20 rounded-lg flex flex-col items-center justify-center transition-colors duration-200 sm:h-24 sm:w-20 ${
         isDark ? 'bg-gray-700' : 'bg-gray-100'
       } ${borderColor} ${isOver ? 'ring-2 ring-blue-400' : ''}`}
     >
@@ -160,6 +187,7 @@ const Slot = memo(({
           <DraggableCardInSlot cardId={cardId} slotIndex={slotIndex} slot2Type={slot2Type} isDark={isDark} />
           <button
             type="button"
+            aria-label={`Убрать карту из слота ${slotIndex + 1}`}
             onClick={(e) => { e.stopPropagation(); onRemove(); }}
             className={`absolute -top-1 -right-1 rounded-full w-4 h-4 flex items-center justify-center text-[8px] transition-colors ${
               isDark ? 'bg-red-600 hover:bg-red-700 text-white' : 'bg-red-500 hover:bg-red-600 text-white'
@@ -192,11 +220,11 @@ const Slot = memo(({
 const SortableCard = memo(({
   id,
   cardId,
-  isDark,
+  onSelect,
 }: {
   id: string;
   cardId: string;
-  isDark: boolean;
+  onSelect: (cardId: string) => void;
 }) => {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
   const style = {
@@ -206,17 +234,20 @@ const SortableCard = memo(({
   };
 
   return (
-    <motion.div
+    <motion.button
+      type="button"
       ref={setNodeRef}
       style={style}
       {...attributes}
       {...listeners}
+      aria-label={`Добавить ${cardTranslations[cardId] ?? cardId}`}
+      onClick={() => onSelect(cardId)}
       className="cursor-grab active:cursor-grabbing flex-shrink-0 w-9 h-9 flex items-center justify-center rounded transition-colors duration-200 hover:bg-gray-200 dark:hover:bg-gray-600"
       whileHover={{ scale: 1.1 }}
       whileTap={{ scale: 0.95 }}
     >
       <CardIcon cardId={cardId} className="w-8 h-8" />
-    </motion.div>
+    </motion.button>
   );
 });
 
@@ -229,10 +260,11 @@ const DeckBuilder: React.FC = () => {
   const isEdit = !!id;
   const navigationState = location.state as {
     prefillCards?: unknown;
-    prefillSlot2Type?: 'evo' | 'hero';
-    prefillName?: string;
+    prefillSlot2Type?: 'evo' | 'hero' | null;
     prefillCategoryName?: string;
     prefillSourceName?: string;
+    screenshotFile?: File;
+    screenshotSlotsReordered?: boolean;
   } | null;
   const prefillCards = Array.isArray(navigationState?.prefillCards)
     ? navigationState.prefillCards
@@ -256,25 +288,51 @@ const DeckBuilder: React.FC = () => {
     })
   );
   const [slot2Type, setSlot2Type] = useState<'evo' | 'hero' | null>(prefillSlot2Type);
-  const [name, setName] = useState(navigationState?.prefillName || '');
-  const [tier, setTier] = useState('');
-  const [winRate, setWinRate] = useState('');
-  const [dataKind, setDataKind] = useState<NonNullable<MetaDeckProvenance['dataKind']> | ''>('');
-  const [gameMode, setGameMode] = useState('');
-  const [dataDate, setDataDate] = useState('');
-  const [sampleSize, setSampleSize] = useState('');
-  const [categoryId, setCategoryId] = useState('');
-  const [sourceId, setSourceId] = useState('');
-  const [sourceUrl, setSourceUrl] = useState('');
+  const [fields, setFields] = useState<Partial<DeckFields>>({});
+  const setField = <K extends keyof DeckFields>(field: K, value: DeckFields[K]) =>
+    setFields(current => ({ ...current, [field]: value }));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [isDragging, setIsDragging] = useState(false);
   const [deckId, setDeckId] = useState<string | null>(null);
-
+  const [screenshotUrl, setScreenshotUrl] = useState<string>();
   const [categories, setCategories] = useState<Category[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
   const [newCategoryName, setNewCategoryName] = useState('');
   const [newSourceName, setNewSourceName] = useState('');
+
+  const check = useDeckMatches({ cards: isEdit && deckId !== id ? [] : slots, slot2Type, editId: id, autofill: !isEdit });
+  const stats = isEdit ? undefined : check.suggestedStats;
+  const name = fields.name ?? (!isEdit && check.complete ? suggestedDeckName(slots, check.matches, stats?.name) : '');
+  const tier = fields.tier ?? stats?.tier ?? '';
+  const winRate = fields.winRate ?? String(stats?.winRate ?? '');
+  const dataKind = fields.dataKind ?? (stats ? 'match-stats' : '');
+  const gameMode = fields.gameMode ?? stats?.gameMode ?? '';
+  const dataDate = fields.dataDate ?? stats?.dataDate ?? '';
+  const sampleSize = fields.sampleSize ?? String(stats?.sampleSize ?? '');
+  const categoryId = fields.categoryId ?? stats?.categoryId ??
+    categories.find(item => item.name.toLowerCase() === navigationState?.prefillCategoryName?.toLowerCase())?.id ?? categories[0]?.id ?? '';
+  const sourceId = fields.sourceId ?? stats?.sourceId ??
+    sources.find(item => item.name.toLowerCase() === navigationState?.prefillSourceName?.toLowerCase())?.id ?? sources[0]?.id ?? '';
+  const sourceUrl = fields.sourceUrl ?? stats?.sourceUrl ?? '';
+  const draftKey = JSON.stringify([id, slots, slot2Type, name.trim()]);
+  const [conflict, setConflict] = useState<{ key: string; matches: DeckMatch[]; token?: string; message: string }>();
+  const currentConflict = conflict?.key === draftKey ? conflict : undefined;
+  const matches = currentConflict
+    ? [...currentConflict.matches, ...check.matches.filter(match => match.kind === 'similar' &&
+        !currentConflict.matches.some(current => current.location === match.location && current.id === match.id))]
+    : check.matches;
+  const exactMatch = matches.find(match => match.kind === 'exact');
+
+  useEffect(() => {
+    if (!navigationState?.screenshotFile) {
+      setScreenshotUrl(undefined);
+      return;
+    }
+    const url = URL.createObjectURL(navigationState.screenshotFile);
+    setScreenshotUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [navigationState?.screenshotFile]);
 
   const availableCards = ALL_CARDS_DATA.filter(c => !slots.includes(c.id));
 
@@ -294,39 +352,21 @@ const DeckBuilder: React.FC = () => {
     let active = true;
     const loadCategoriesAndSources = async () => {
       try {
-        let [cats, srcs] = await Promise.all([
+        const [cats, srcs] = await Promise.all([
           getCategories(Boolean(navigationState?.prefillCategoryName)),
           getSources(Boolean(navigationState?.prefillSourceName)),
         ]);
         if (!active) return;
-        let preferredCategory = navigationState?.prefillCategoryName
-          ? cats.find(category => category.name.toLocaleLowerCase() === navigationState.prefillCategoryName?.toLocaleLowerCase())
-          : undefined;
-        let preferredSource = navigationState?.prefillSourceName
-          ? srcs.find(source => source.name.toLocaleLowerCase() === navigationState.prefillSourceName?.toLocaleLowerCase())
-          : undefined;
-
-        if (navigationState?.prefillCategoryName && !preferredCategory) {
-          preferredCategory = await createCategory(navigationState.prefillCategoryName);
-          if (!active) return;
-          cats = [...cats, preferredCategory];
-        }
-        if (navigationState?.prefillSourceName && !preferredSource) {
-          preferredSource = await createSource(navigationState.prefillSourceName);
-          if (!active) return;
-          srcs = [...srcs, preferredSource];
-        }
-
         setCategories(cats);
         setSources(srcs);
-        if (preferredCategory) setCategoryId(preferredCategory.id);
-        else if (cats.length > 0 && !categoryId) setCategoryId(cats[0].id);
-        if (preferredSource) setSourceId(preferredSource.id);
-        else if (srcs.length > 0 && !sourceId) setSourceId(srcs[0].id);
+        const preferredSource = navigationState?.prefillSourceName;
+        if (preferredSource && !srcs.some(source => source.name.toLowerCase() === preferredSource.toLowerCase())) {
+          setNewSourceName(preferredSource);
+        }
       } catch (err) {
         if (!active) return;
         console.error('Ошибка загрузки категорий/источников для формы колоды', err);
-        setError('Не удалось загрузить или создать категорию и источник для распознанной колоды');
+        setError('Не удалось загрузить категории и источники');
       }
     };
     void loadCategoriesAndSources();
@@ -336,41 +376,48 @@ const DeckBuilder: React.FC = () => {
   // Загрузка данных колоды при редактировании
   useEffect(() => {
     if (isEdit && id) {
+      let active = true;
       const loadDeck = async () => {
         setLoading(true);
+        setDeckId(null);
         try {
           const deck = await getMetaDeck(id);
+          if (!active) return;
           setDeckId(deck.id);
-          setName(deck.name);
-          setTier(deck.tier || '');
-          setWinRate(deck.winRate == null ? '' : String(deck.winRate));
-          setDataKind(deck.dataKind ?? '');
-          setGameMode(deck.gameMode ?? '');
-          setDataDate(deck.dataDate ?? '');
-          setSampleSize(deck.sampleSize == null ? '' : String(deck.sampleSize));
-          setCategoryId(deck.categoryId);
-          setSourceId(deck.sourceId);
-          setSourceUrl(deck.sourceUrl || '');
+          setFields({
+            name: deck.name,
+            tier: deck.tier ?? '',
+            winRate: String(deck.winRate ?? ''),
+            dataKind: deck.dataKind ?? '',
+            gameMode: deck.gameMode ?? '',
+            dataDate: deck.dataDate ?? '',
+            sampleSize: String(deck.sampleSize ?? ''),
+            categoryId: deck.categoryId,
+            sourceId: deck.sourceId,
+            sourceUrl: deck.sourceUrl ?? '',
+          });
           const cards = JSON.parse(deck.cards);
           const newSlots = [...Array(8).fill(null)];
           cards.forEach((card: string, idx: number) => {
-            if (idx < 8) newSlots[idx] = card;
+            if (idx < 8) newSlots[idx] = card === 'Log' ? 'The Log' : card;
           });
           setSlots(newSlots);
           setSlot2Type(deck.slot2Type || null);
         } catch (err) {
+          if (!active) return;
           setError('Не удалось загрузить колоду');
           console.error(err);
         } finally {
-          setLoading(false);
+          if (active) setLoading(false);
         }
       };
-      loadDeck();
+      void loadDeck();
+      return () => { active = false; };
     }
   }, [isEdit, id]);
 
   const sensors = useSensors(
-    useSensor(PointerSensor),
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor, {
       coordinateGetter: sortableKeyboardCoordinates,
     })
@@ -599,7 +646,7 @@ const DeckBuilder: React.FC = () => {
     try {
       const created = await createCategory(newCategoryName.trim());
       setCategories([...categories, created]);
-      setCategoryId(created.id);
+      setField('categoryId', created.id);
       setNewCategoryName('');
     } catch (err) {
       alert('Ошибка создания категории');
@@ -613,9 +660,9 @@ const DeckBuilder: React.FC = () => {
       await deleteCategory(categoryId);
       setCategories(categories.filter(c => c.id !== categoryId));
       if (categories.length > 1) {
-        setCategoryId(categories.find(c => c.id !== categoryId)?.id || categories[0]?.id || '');
+        setField('categoryId', categories.find(c => c.id !== categoryId)?.id || categories[0]?.id || '');
       } else {
-        setCategoryId('');
+        setField('categoryId', '');
       }
     } catch (err: any) {
       alert(err.response?.data?.error || 'Ошибка удаления категории');
@@ -628,7 +675,7 @@ const DeckBuilder: React.FC = () => {
     try {
       const created = await createSource(newSourceName.trim());
       setSources([...sources, created]);
-      setSourceId(created.id);
+      setField('sourceId', created.id);
       setNewSourceName('');
     } catch (err) {
       alert('Ошибка создания источника');
@@ -642,9 +689,9 @@ const DeckBuilder: React.FC = () => {
       await deleteSource(sourceId);
       setSources(sources.filter(s => s.id !== sourceId));
       if (sources.length > 1) {
-        setSourceId(sources.find(s => s.id !== sourceId)?.id || sources[0]?.id || '');
+        setField('sourceId', sources.find(s => s.id !== sourceId)?.id || sources[0]?.id || '');
       } else {
-        setSourceId('');
+        setField('sourceId', '');
       }
     } catch (err: any) {
       alert(err.response?.data?.error || 'Ошибка удаления источника');
@@ -652,10 +699,12 @@ const DeckBuilder: React.FC = () => {
   };
 
   // Сохранение/обновление
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent, confirmVariant = false) => {
     e.preventDefault();
-    if (!name.trim() || slots.some(s => s === null)) {
-      setError('Заполните название и выберите все 8 карт');
+    if (loading || (isEdit && deckId !== id) || check.checking || check.failed ||
+        (currentConflict && !confirmVariant)) return;
+    if (!name.trim() || !check.complete) {
+      setError('Заполните название и выберите восемь уникальных карт');
       return;
     }
     const championCards = slots.filter(id => {
@@ -695,6 +744,7 @@ const DeckBuilder: React.FC = () => {
         categoryId,
         sourceId,
         sourceUrl: sourceUrl || undefined,
+        duplicateConfirmation: confirmVariant ? currentConflict?.token : undefined,
       };
       if (isEdit && deckId) {
         await updateMetaDeck(deckId, data);
@@ -703,7 +753,17 @@ const DeckBuilder: React.FC = () => {
       }
       navigate('/decks');
     } catch (err) {
-      setError(isEdit ? 'Ошибка обновления колоды' : 'Ошибка сохранения колоды');
+      if (isAxiosError<{ error?: string; matches?: DeckMatch[]; duplicateConfirmation?: string }>(err)) {
+        const response = err.response?.data;
+        if (err.response?.status === 409 && response?.matches) {
+          setConflict({ key: draftKey, matches: response.matches, token: response.duplicateConfirmation,
+            message: response.error ?? 'Проверьте совпадения перед сохранением' });
+        } else {
+          setError(response?.error ?? 'Не удалось сохранить колоду');
+        }
+      } else {
+        setError('Не удалось сохранить колоду');
+      }
     } finally {
       setLoading(false);
     }
@@ -753,13 +813,14 @@ const DeckBuilder: React.FC = () => {
         isDark ? 'bg-gray-800' : 'bg-white'
       }`}>
         <div className="mb-4">
-          <label className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+          <label htmlFor="deck-name" className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
             Название
           </label>
           <input
+            id="deck-name"
             type="text"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => setField('name', e.target.value)}
             className={`w-full rounded px-3 py-2 transition-colors duration-200 ${
               isDark
                 ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
@@ -769,6 +830,10 @@ const DeckBuilder: React.FC = () => {
           />
         </div>
 
+        {screenshotUrl && <div className="mb-4 max-w-md"><DeckScreenshot url={screenshotUrl} /></div>}
+        {navigationState?.screenshotSlotsReordered && (
+          <p className="mb-3 text-sm">Распознанные формы перенесены в специальные слоты конструктора.</p>
+        )}
         <DndContext
           sensors={sensors}
           collisionDetection={closestCenter}
@@ -776,7 +841,7 @@ const DeckBuilder: React.FC = () => {
           onDragEnd={handleDragEnd}
         >
           <div className="flex flex-wrap gap-4">
-            <div className="flex-shrink-0">
+            <div className="w-full sm:w-auto sm:flex-shrink-0">
               <div className="grid grid-cols-4 gap-0.5">
                 {slots.map((cardId, idx) => (
                   <Slot
@@ -806,7 +871,7 @@ const DeckBuilder: React.FC = () => {
                     <div className="flex flex-wrap gap-0">
                       <SortableContext items={cardIds} strategy={rectSortingStrategy}>
                         {cards.map(c => (
-                          <SortableCard key={`card-${c.id}`} id={`card-${c.id}`} cardId={c.id} isDark={isDark} />
+                          <SortableCard key={`card-${c.id}`} id={`card-${c.id}`} cardId={c.id} onSelect={handleCardClick} />
                         ))}
                       </SortableContext>
                     </div>
@@ -830,7 +895,7 @@ const DeckBuilder: React.FC = () => {
                     <div className="flex flex-wrap gap-0">
                       <SortableContext items={cardIds} strategy={rectSortingStrategy}>
                         {cards.map(c => (
-                          <SortableCard key={`card-${c.id}`} id={`card-${c.id}`} cardId={c.id} isDark={isDark} />
+                          <SortableCard key={`card-${c.id}`} id={`card-${c.id}`} cardId={c.id} onSelect={handleCardClick} />
                         ))}
                       </SortableContext>
                     </div>
@@ -840,6 +905,15 @@ const DeckBuilder: React.FC = () => {
             </div>
           </div>
         </DndContext>
+        <DeckMatches check={check} matches={matches} />
+        {!isEdit && check.complete && !check.checking && !check.failed && (
+          <p className="mt-3 text-sm text-gray-600 dark:text-gray-300" role="status">
+            {stats ? (
+              <>Статистика для этого состава из <Link className="underline" target="_blank" rel="noreferrer"
+                to={'/decks?deck=' + encodeURIComponent(stats.id)}>{stats.name}</Link>. Поля можно изменить.</>
+            ) : 'Для этого состава нет статистики в каталоге. Винрейт можно указать вручную.'}
+          </p>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
           <div>
@@ -849,7 +923,7 @@ const DeckBuilder: React.FC = () => {
             <input
               type="text"
               value={tier}
-              onChange={(e) => setTier(e.target.value)}
+              onChange={(e) => setField('tier', e.target.value)}
               className={`w-full rounded px-3 py-2 transition-colors duration-200 ${
                 isDark
                   ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
@@ -859,16 +933,17 @@ const DeckBuilder: React.FC = () => {
             />
           </div>
           <div>
-            <label className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
+            <label htmlFor="deck-win-rate" className={`block font-medium mb-1 ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
               Винрейт %
             </label>
             <input
+              id="deck-win-rate"
               type="number"
               step="any"
               min={0}
               max={100}
               value={winRate}
-              onChange={(e) => setWinRate(e.target.value)}
+              onChange={(e) => setField('winRate', e.target.value)}
               className={`w-full rounded px-3 py-2 transition-colors duration-200 ${
                 isDark
                   ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
@@ -883,7 +958,7 @@ const DeckBuilder: React.FC = () => {
           <label className="flex flex-col gap-1">
             Тип данных
             <select className="rounded border p-2 dark:bg-gray-700" value={dataKind}
-              onChange={event => setDataKind(event.target.value as typeof dataKind)}>
+              onChange={event => setField('dataKind', event.target.value as typeof dataKind)}>
               <option value="">Не указан</option>
               {Object.entries(metaDataLabels).map(([kind, label]) => <option key={kind} value={kind}>{label}</option>)}
             </select>
@@ -891,17 +966,17 @@ const DeckBuilder: React.FC = () => {
           <label className="flex flex-col gap-1">
             Режим
             <input className="rounded border p-2 dark:bg-gray-700" value={gameMode} maxLength={80}
-              onChange={event => setGameMode(event.target.value)} />
+              onChange={event => setField('gameMode', event.target.value)} />
           </label>
           <label className="flex flex-col gap-1">
             Дата данных
             <input className="rounded border p-2 dark:bg-gray-700" type="date" value={dataDate}
-              onChange={event => setDataDate(event.target.value)} />
+              onChange={event => setField('dataDate', event.target.value)} />
           </label>
           <label className="flex flex-col gap-1">
             Выборка (число матчей)
             <input className="rounded border p-2 dark:bg-gray-700" type="number" min={1} max={2147483647}
-              value={sampleSize} onChange={event => setSampleSize(event.target.value)} />
+              value={sampleSize} onChange={event => setField('sampleSize', event.target.value)} />
           </label>
         </div>
 
@@ -913,7 +988,7 @@ const DeckBuilder: React.FC = () => {
             <div className="flex flex-wrap items-center gap-2">
               <select
                 value={categoryId}
-                onChange={(e) => setCategoryId(e.target.value)}
+                onChange={(e) => setField('categoryId', e.target.value)}
                 className={`flex-1 rounded px-3 py-2 transition-colors duration-200 ${
                   isDark
                     ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
@@ -956,7 +1031,7 @@ const DeckBuilder: React.FC = () => {
             <div className="flex flex-wrap items-center gap-2">
               <select
                 value={sourceId}
-                onChange={(e) => setSourceId(e.target.value)}
+                onChange={(e) => setField('sourceId', e.target.value)}
                 className={`flex-1 rounded px-3 py-2 transition-colors duration-200 ${
                   isDark
                     ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
@@ -1001,7 +1076,7 @@ const DeckBuilder: React.FC = () => {
           <input
             type="url"
             value={sourceUrl}
-            onChange={(e) => setSourceUrl(e.target.value)}
+            onChange={(e) => setField('sourceUrl', e.target.value)}
             className={`w-full rounded px-3 py-2 transition-colors duration-200 ${
               isDark
                 ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
@@ -1011,22 +1086,30 @@ const DeckBuilder: React.FC = () => {
           />
         </div>
 
-        {error && (
+        {(error || currentConflict) && (
           <div className={`mt-4 p-3 rounded-lg ${isDark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-600'}`}>
-            {error}
+            {error || currentConflict?.message}
           </div>
         )}
 
-        <div className="flex gap-3 mt-4">
+        <div className="mt-4 flex flex-wrap gap-3">
+          {exactMatch && (
+            <Link to={deckMatchLink(exactMatch)} className="rounded bg-blue-600 px-4 py-2 text-white">
+              Открыть существующую
+            </Link>
+          )}
           <button
-            type="submit"
-            disabled={loading}
-            className={`flex items-center gap-2 px-6 py-2 rounded transition-all duration-200 ${
-              loading ? 'opacity-50 cursor-not-allowed' : 'hover:shadow-lg transform hover:scale-105'
-            } ${isDark ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-600 hover:bg-blue-700'} text-white`}
+            type={currentConflict ? 'button' : 'submit'}
+            onClick={currentConflict?.token ? event => void handleSubmit(event, true) : undefined}
+            disabled={loading || (isEdit && deckId !== id) || check.checking || check.failed ||
+              Boolean(currentConflict && !currentConflict.token)}
+            className={`flex items-center gap-2 rounded px-4 py-2 disabled:opacity-50 ${
+              exactMatch ? 'border' : 'bg-blue-600 text-white hover:bg-blue-700'
+            }`}
           >
             <CheckIcon className="w-4 h-4" />
-            {loading ? (isEdit ? 'Обновление...' : 'Сохранение...') : (isEdit ? 'Обновить' : 'Сохранить')}
+            {currentConflict?.token ? 'Подтвердить сохранение варианта' :
+              isEdit ? 'Сохранить изменения' : exactMatch ? 'Сохранить вариант' : 'Сохранить'}
           </button>
           <button
             type="button"

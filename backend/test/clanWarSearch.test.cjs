@@ -3,6 +3,33 @@ const { test } = require('node:test');
 const { findClanWarCombinations } = require('../dist/services/clanWarCombinations');
 const { planClanWarUpgrade } = require('../dist/services/clanWarUpgrade');
 const { ALL_CARDS_DATA } = require('../dist/config/cards');
+const { readPlayerResources } = require('../dist/services/playerResources');
+
+test('Clan War shares wildcards and shards across four decks and rejects duplicate bases across forms', () => {
+  const cores = ['Knight', 'Archers', 'Zap', 'Bats'];
+  const fillers = ALL_CARDS_DATA.filter(card => !cores.includes(card.id) && !card.heroFile && !card.evoFile && !card.champion)
+    .map(card => card.id);
+  const decks = cores.map((card, index) => ({
+    deckId: String(index), name: String(index), cards: [card, ...fillers.slice(index * 7, index * 7 + 7)],
+  }));
+  const levels = Object.fromEntries(decks.flatMap(deck => deck.cards).map(card => [card, cores.includes(card) ? 15 : 16]));
+  const missing = readPlayerResources();
+  const resources = { ...missing, gold: 480000, universalShards: 6,
+    wildcards: { ...missing.wildcards, Common: 7500 } };
+  const run = (pool, inventory, pinned = new Set()) =>
+    planClanWarUpgrade(pool, levels, 16, pinned, new Set(), new Set(), inventory);
+  const { upgradePlan } = run(decks, resources);
+  assert.equal(upgradePlan.affordable, false);
+  assert.equal(upgradePlan.uncoveredCopies, 22500);
+  assert.equal(upgradePlan.wildcardsCovered, 7500);
+  assert.equal(upgradePlan.shardDeficit, 18);
+  assert.equal(upgradePlan.forms.reduce((sum, form) => sum + form.universalShards, 0), 6);
+  const enough = { ...resources, universalShards: 24, wildcards: { ...resources.wildcards, Common: 30000 } };
+  assert.equal(run(decks, enough).upgradePlan.affordable, true);
+  const heroDeck = { ...decks[1], cards: [decks[1].cards[1], 'Knight', ...decks[1].cards.slice(2)] };
+  assert.match(run([decks[0], heroDeck, ...decks.slice(2)], enough, new Set(['0', '1'])).upgradePlanBlocker,
+    /одинаковые карты/);
+});
 
 test('four-deck upgrade plan keeps the pinned deck and chooses the cheapest valid fourth deck', () => {
   const cards = ALL_CARDS_DATA.slice(0, 40).map(card => card.id);
@@ -17,7 +44,7 @@ test('four-deck upgrade plan keeps the pinned deck and chooses the cheapest vali
   const result = planClanWarUpgrade(decks, levels, 15, pinned, required, new Set());
   assert.deepEqual(result.upgradePlan.decks.map(deck => deck.deckId), ['0', '1', '2', '3']);
   assert.deepEqual(result.upgradePlan.missingCards, [cards[0]]);
-  assert.ok(result.upgradePlan.copiesByRarity.Common > 0);
+  assert.ok(result.upgradePlan.uncoveredCopiesByRarity.Common > 0);
   const blocked = planClanWarUpgrade(decks, levels, 15, pinned, required, new Set([cards[0]]));
   assert.match(blocked.upgradePlanBlocker, /закреплённой.+исключённая/);
 });

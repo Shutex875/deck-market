@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { isAxiosError } from 'axios';
-import { useNavigate, useParams } from 'react-router-dom';
+import { NavLink, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import PlayerResourcesForm from './PlayerResourcesForm';
+import { playerResourcesPath } from './PlayerResourceLink';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as Dialog from '@radix-ui/react-dialog';
 import {
@@ -53,12 +55,16 @@ const normalizeLevel = (value: string): number | null => {
 const PlayerForm: React.FC = () => {
   const { name } = useParams<{ name: string }>();
   const isEdit = !!name;
+  const [searchParams] = useSearchParams();
+  const showResources = isEdit && searchParams.get('tab') === 'resources';
   const navigate = useNavigate();
   const { theme } = useTheme();
   const isDark = theme === 'dark';
 
   const [activeTab, setActiveTab] = useState<'levels' | 'specials'>('levels');
   const [playerName, setPlayerName] = useState('');
+  const [playerId, setPlayerId] = useState('');
+  const [savedTag, setSavedTag] = useState('');
   const [levels, setLevels] = useState<Record<string, string>>({});
   const [evolutions, setEvolutions] = useState<string[]>([]);
   const [heroes, setHeroes] = useState<string[]>([]);
@@ -81,7 +87,9 @@ const PlayerForm: React.FC = () => {
     if (isEdit && name) {
       const fetchPlayer = async () => {
         try {
-          const data = await getPlayer(decodeURIComponent(name));
+          const data = await getPlayer(name);
+          setPlayerId(data.id);
+          setSavedTag(data.tag ?? '');
           setPlayerName(data.name);
           setPlayerTag(data.tag || '');
           const parsedLevels = JSON.parse(data.levels);
@@ -444,6 +452,9 @@ const PlayerForm: React.FC = () => {
       >
         Эволюции и Герои
       </button>
+      {isEdit && <NavLink to={playerResourcesPath(name)} className="px-4 py-2 text-sm font-medium text-blue-700 dark:text-blue-300">
+        Ресурсы
+      </NavLink>}
     </div>
   );
 
@@ -470,6 +481,20 @@ const PlayerForm: React.FC = () => {
     Legendary: 'Легендарные',
     Champion: 'Чемпионы',
   };
+
+  if (showResources) {
+    return (
+      <section className="mx-auto max-w-4xl">
+        <h2 className="mb-3 text-2xl font-bold">Редактировать аккаунт</h2>
+        <nav aria-label="Настройки игрового аккаунта" className="mb-4 flex items-center gap-4 text-sm">
+          <NavLink to={`/players/edit/${encodeURIComponent(name)}`} className="text-blue-700 underline dark:text-blue-300">Коллекция</NavLink>
+          <span aria-current="page" className="rounded-lg bg-blue-700 px-3 py-2 text-white">Ресурсы</span>
+        </nav>
+        {playerId ? <PlayerResourcesForm key={playerId} id={playerId} name={playerName} tag={savedTag} />
+          : error ? <p role="alert">{error}</p> : <p>Загрузка аккаунта…</p>}
+      </section>
+    );
+  }
 
   return (
     <div className={`max-w-7xl mx-auto transition-colors duration-200 ${

@@ -36,7 +36,7 @@ export function isUpgradeTarget(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_UPGRADE_LEVEL;
 }
 
-export function diagnoseUpgrades(cards: string[], levels: Record<string, number>, targetLevel: number) {
+export function diagnoseUpgrades(cards: string[], levels: Record<string, number>, targetLevel: number, includeUnlocks = false) {
   const { cardLevels } = getDeckAvailability(cards, levels);
   const details = cards.map(card => {
     const currentLevel = cardLevels[card] ?? 0;
@@ -47,7 +47,9 @@ export function diagnoseUpgrades(cards: string[], levels: Record<string, number>
     let neededCards = 0;
     const steps: { level: number; gold: number; copies: number }[] = [];
     if (rarity) {
-      for (let level = Math.floor(currentLevel) + 1; level <= targetLevel; level++) {
+      const goal = includeUnlocks && currentLevel === 0
+        ? Math.max(targetLevel, [1, 3, 6, 9, 11][rarityIndex]) : targetLevel;
+      for (let level = Math.floor(currentLevel) + 1; level <= goal; level++) {
         const upgrade = upgrades[level];
         const copies = upgrade.copies[rarityIndex];
         if (copies === 0) continue;

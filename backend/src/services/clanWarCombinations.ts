@@ -16,6 +16,7 @@ export function findClanWarCombinations<Deck extends ScoredDeck>(
   limit: number,
   minimumSize = 2,
   requiredCards: ReadonlySet<string> = new Set(),
+  canExtend?: (selected: readonly Deck[], totalScore: number) => boolean,
 ): Combination<Deck>[] {
   if ([...requiredIds].some(id => !decks.some(deck => deck.deckId === id))) return [];
   const cardKey = (card: string) => card === 'Log' ? 'The Log' : card;
@@ -82,7 +83,10 @@ export function findClanWarCombinations<Deck extends ScoredDeck>(
           !hasDuplicateCards &&
           (mask & usedMask) === 0n) {
         selected.push(deck);
-        search(index + 1, slots - 1, requiredLeft - Number(required), totalScore + deck.score, usedMask | mask);
+        const nextScore = totalScore + deck.score;
+        if (!canExtend || canExtend(selected, nextScore)) {
+          search(index + 1, slots - 1, requiredLeft - Number(required), nextScore, usedMask | mask);
+        }
         selected.pop();
       }
       // Choosing a later candidate here would skip a required deck.

@@ -1,7 +1,7 @@
 import { useActivePlayer } from '../context/ActivePlayer';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
   UserIcon,
@@ -21,9 +21,12 @@ const SavedDecks: React.FC = () => {
   const isDark = theme === 'dark';
   const navigate = useNavigate();
 
+  const [params, setParams] = useSearchParams();
+  const openedDeck = params.get('deck');
   const { activePlayer } = useActivePlayer();
   const selectedPlayer = activePlayer?.name ?? '';
   const { decks, loading, error, reload } = useSavedDecks(selectedPlayer);
+  const visibleDecks = openedDeck ? decks.filter(deck => deck.id === openedDeck) : decks;
   const [profile, setProfile] = useState<{ name: string; evolutions: string[]; heroes: string[] }>();
   const playerEvolutions = profile?.name === selectedPlayer ? profile.evolutions : [];
   const playerHeroes = profile?.name === selectedPlayer ? profile.heroes : [];
@@ -120,13 +123,14 @@ const SavedDecks: React.FC = () => {
       <h2 className="text-2xl font-bold mb-4">Мои колоды</h2>
 
       {selectedPlayer && <p className="text-sm">Аккаунт <strong>{selectedPlayer}</strong></p>}
+      {openedDeck && <button type="button" className="mt-2 underline" onClick={() => setParams({})}>Показать все мои колоды</button>}
 
       {error && <div className={`mb-4 p-3 rounded-lg ${
         isDark ? 'bg-red-900/50 text-red-300' : 'bg-red-100 text-red-600'
       }`}>{error}</div>}
 
       <AnimatePresence mode="wait">
-        {decks.length === 0 ? (
+        {visibleDecks.length === 0 ? (
           <motion.div
             key="empty"
             initial={{ opacity: 0, y: 10 }}
@@ -135,7 +139,7 @@ const SavedDecks: React.FC = () => {
             className={`text-center py-8 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}
           >
             <BookmarkIcon className="w-12 h-12 mx-auto mb-2 opacity-50" />
-            <p>Нет сохранённых колод. Перейдите в «Подбор колоды» и сохраните понравившуюся.</p>
+            <p>{openedDeck ? 'Сохранённая колода не найдена.' : 'Нет сохранённых колод. Перейдите в «Подбор колоды» и сохраните понравившуюся.'}</p>
           </motion.div>
         ) : (
           <motion.div
@@ -154,7 +158,7 @@ const SavedDecks: React.FC = () => {
             }}
             className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
           >
-            {decks.map(deck => {
+            {visibleDecks.map(deck => {
               const cards = JSON.parse(deck.cards);
               return (
                 <motion.div

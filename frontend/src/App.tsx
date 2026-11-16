@@ -18,6 +18,8 @@ const Recommend = lazy(() => import('./components/Recommend'));
 const ClanWarRecommend = lazy(() => import('./components/ClanWarRecommend'));
 const Diagnose = lazy(() => import('./components/Diagnose'));
 const UpgradePlan = lazy(() => import('./components/UpgradePlan'));
+const BudgetPlan = lazy(() => import('./components/BudgetPlan'));
+const SharedCardsPlan = lazy(() => import('./components/SharedCardsPlan'));
 const SavedDecks = lazy(() => import('./components/SavedDecks'));
 const PlayerStats = lazy(() => import('./components/PlayerStats'));
 const UserProfile = lazy(() => import('./components/UserProfile'));
@@ -75,11 +77,12 @@ function AppContent({ user, logout, updateUser }: {
     if (!player) return;
     setPreferredId(id);
     if (location.pathname.startsWith('/players/edit/')) {
-      navigate(`/players/edit/${encodeURIComponent(player.name)}`);
+      navigate(`/players/edit/${encodeURIComponent(player.name)}${location.search}`);
       return;
     }
     const query = new URLSearchParams(location.search);
     query.delete('player');
+    if (location.pathname === '/my-decks') query.delete('deck');
     if (location.pathname === '/upgrade-plan' || location.pathname === '/diagnose') {
       query.delete('deckId');
       query.delete('metaDeckId');
@@ -171,7 +174,7 @@ function AppContent({ user, logout, updateUser }: {
           <Routes>
             <Route path="/" element={<DeckList key="latest" latest canManageCatalog={user.canManageCatalog} />} />
             <Route path="/more" element={<Link className="text-blue-700 underline dark:text-blue-300" to="/more/game">Мини-игра</Link>} />
-            <Route path="/more/game" element={<Home theme={theme} />} />
+            <Route path="/more/game" element={<Home key={activePlayer?.id} theme={theme} />} />
             <Route path="/players" element={<PlayerList />} />
             <Route path="/player-stats" element={<PlayerStats />} />
             <Route path="/players/new" element={<PlayerForm />} />
@@ -187,9 +190,8 @@ function AppContent({ user, logout, updateUser }: {
             <Route path="/upgrade-plan" element={<UpgradePlan />}>
               <Route index element={<Diagnose key={`${activePlayer?.id}:${location.search}`} />} />
               <Route path="clan-war" element={<ClanWarRecommend key={activePlayer?.id} upgrade />} />
-              {['budget', 'shared-cards'].map(path => (
-                <Route key={path} path={path} element={<p>Эта вкладка пока недоступна.</p>} />
-              ))}
+              <Route path="budget" element={<BudgetPlan key={activePlayer?.id} />} />
+              <Route path="shared-cards" element={<SharedCardsPlan key={activePlayer?.id} />} />
             </Route>
             <Route path="/profile" element={
               <>

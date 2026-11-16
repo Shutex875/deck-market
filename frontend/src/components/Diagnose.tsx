@@ -1,3 +1,5 @@
+import PlayerResourceLink from './PlayerResourceLink';
+import UpgradeCopyCoverage from './UpgradeCopyCoverage';
 import { useActivePlayer } from '../context/ActivePlayer';
 import React, { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
@@ -12,7 +14,7 @@ import {
   SparklesIcon,
   InformationCircleIcon,
 } from '@heroicons/react/24/outline';
-import { diagnoseDeck, type UpgradeDetail } from '../api';
+import { diagnoseDeck } from '../api';
 import { useSavedDecks } from '../hooks/useSavedDecks';
 import { CardIcon } from '../utils/cardImages';
 import { useTheme } from '../context/ThemeContext';
@@ -23,8 +25,6 @@ const formatNumber = (num: number): string => {
   if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
   return num.toString();
 };
-
-const RARITY_KEYS = ['Common', 'Rare', 'Epic', 'Legendary', 'Champion'];
 
 const Diagnose: React.FC = () => {
   const { theme } = useTheme();
@@ -41,35 +41,24 @@ const Diagnose: React.FC = () => {
   const [preferredDeckId, setPreferredDeckId] = useState(deckIdParam || '');
   const selectedDeck = decks.find(deck => deck.id === preferredDeckId) ?? decks[0];
   const selectedDeckId = metaDeckId ?? selectedDeck?.id ?? '';
-  const [diagnosis, setDiagnosis] = useState<null | {
-    deckName: string;
-    totalGold: number;
-    targetLevel: number;
-    details: (UpgradeDetail & { cardsHave: number })[];
-  }>(null);
+  const [diagnosis, setDiagnosis] = useState<Awaited<ReturnType<typeof diagnoseDeck>> | null>(null);
   const [targetLevel, setTargetLevel] = useState(
     Number.isInteger(requestedLevel) && requestedLevel >= 1 && requestedLevel <= 16 ? requestedLevel : 16,
   );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [showDetails, setShowDetails] = useState(false);
-  const [goldInput, setGoldInput] = useState('');
-  const goldBalance = goldInput === '' ? null : Number(goldInput);
-  const [wildcards, setWildcards] = useState<Record<string, number>>({
-    Common: 0,
-    Rare: 0,
-    Epic: 0,
-    Legendary: 0,
-    Champion: 0,
-  });
-
+  const resources = activePlayer?.resources;
+  const goldBalance = resources?.gold ?? 0;
+  const wildcards: Record<string, number> = resources?.wildcards ?? {};
+  const details = diagnosis?.details ?? [];
 
   useEffect(() => {
     if (!selectedDeckId || !selectedPlayer) return;
     const request = new AbortController();
     void runDiagnose(request.signal);
     return () => request.abort();
-  }, [selectedDeckId, selectedPlayer, targetLevel, metaDeckId, activePlayer?.levels]);
+  }, [selectedDeckId, selectedPlayer, targetLevel, metaDeckId, activePlayer?.levels, resources]);
 
 
   const runDiagnose = async (signal: AbortSignal) => {
@@ -79,13 +68,7 @@ const Diagnose: React.FC = () => {
     try {
       const result = await diagnoseDeck(selectedPlayer, selectedDeckId, signal, targetLevel, metaDeckId ? 'meta' : 'saved');
       if (signal.aborted) return;
-      setDiagnosis(previous => ({
-        ...result,
-        details: result.details.map(item => ({
-          ...item,
-          cardsHave: previous?.details.find(detail => detail.card === item.card)?.cardsHave ?? 0,
-        })),
-      }));
+      setDiagnosis(result);
     } catch (err) {
       if (!signal.aborted) setError('Ошибка диагностики');
     } finally {
@@ -93,54 +76,13 @@ const Diagnose: React.FC = () => {
     }
   };
 
-  const handleCardsHaveChange = (index: number, value: string) => {
-    if (!diagnosis) return;
-    const num = Math.max(0, parseInt(value) || 0);
-    const newDetails = [...diagnosis.details];
-    newDetails[index] = { ...newDetails[index], cardsHave: num };
-    setDiagnosis({ ...diagnosis, details: newDetails });
-  };
-
   const handleTargetLevelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const val = parseInt(e.target.value);
     setTargetLevel(val);
   };
 
-  const handleWildcardChange = (rarity: string, value: string) => {
-    const num = Math.max(0, parseInt(value) || 0);
-    setWildcards(prev => ({ ...prev, [rarity]: num }));
-  };
-
-  const getRaritySummary = () => {
-    if (!diagnosis) return null;
-    const needed: Record<string, number> = {};
-    const have: Record<string, number> = {};
-    const unlockDeficit: Record<string, number> = {};
-    RARITY_KEYS.forEach(r => { needed[r] = 0; have[r] = 0; });
-    diagnosis.details.forEach(item => {
-      const { rarity } = item;
-      if (!rarity) return;
-      const remaining = Math.max(0, item.neededCards - item.cardsHave);
-      needed[rarity] += remaining;
-      if (item.currentLevel === 0 && item.cardsHave === 0 && item.steps?.length) {
-        unlockDeficit[rarity] = (unlockDeficit[rarity] ?? 0) + item.steps[0].copies;
-      }
-      have[rarity] += item.cardsHave;
-    });
-    const result: Record<string, number> = {};
-    let totalNeeded = 0;
-    RARITY_KEYS.forEach(r => {
-      const wild = wildcards[r] || 0;
-      const remaining = Math.max(unlockDeficit[r] ?? 0, needed[r] - wild);
-      result[r] = remaining;
-      totalNeeded += remaining;
-    });
-    return { needed, have, result, totalNeeded };
-  };
-
-  const raritySummary = getRaritySummary();
   const unopenedCards = diagnosis?.details.filter(item => item.currentLevel === 0).map(item => item.card) ?? [];
-  const upgradeOrder = diagnosis ? planUpgrades(diagnosis.details, wildcards, goldBalance) : [];
+  const upgradeOrder = planUpgrades(details, wildcards, goldBalance);
   const availableSteps = upgradeOrder.filter(step => step.status === 'available');
   const pendingSteps = upgradeOrder.filter(step => step.status !== 'available');
 
@@ -222,40 +164,9 @@ const Diagnose: React.FC = () => {
           </Link>
         )}
 
-        <details className="mt-4 rounded-lg border border-slate-200 px-3 py-2 dark:border-gray-700">
-          <summary className="cursor-pointer text-sm font-medium">Запасы золота и джокеров</summary>
-          <label className="my-2 flex flex-wrap items-center gap-2 text-sm">
-            Баланс золота
-            <input type="number" min={0} step={1} value={goldInput} placeholder="Не указан"
-              className="w-36 rounded border p-1 dark:border-gray-600 dark:bg-gray-700"
-              onChange={event => {
-                const value = event.target.value;
-                setGoldInput(value === '' ? '' : String(Math.max(0, Math.trunc(Number(value)))));
-              }} />
-          </label>
-          <div className="flex flex-wrap gap-2">
-            <span className={`text-sm font-medium self-center ${isDark ? 'text-gray-300' : 'text-gray-700'}`}>
-              Джокеры:
-            </span>
-            {RARITY_KEYS.map(rarity => (
-              <div key={rarity} className="flex items-center gap-1">
-                <label className={`text-xs ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>{rarity}</label>
-                <input
-                  type="number"
-                  min="0"
-                  value={wildcards[rarity] || 0}
-                  onChange={(e) => handleWildcardChange(rarity, e.target.value)}
-                  className={`w-16 rounded px-1 py-1 text-sm text-center transition-colors duration-200 ${
-                    isDark
-                      ? 'bg-gray-700 border-gray-600 text-gray-200 focus:border-blue-400'
-                      : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
-                  } border focus:outline-none focus:ring-2 focus:ring-blue-500/50`}
-                  placeholder="0"
-                />
-              </div>
-            ))}
-          </div>
-        </details>
+        <div className="mt-4 border-t border-slate-200 pt-3 dark:border-gray-700">
+          <PlayerResourceLink player={activePlayer} />
+        </div>
       </div>
 
       {(error || savedDecksError) && (
@@ -292,27 +203,16 @@ const Diagnose: React.FC = () => {
                     Итого: {formatNumber(diagnosis.totalGold)} золота
                   </span>
                 </div>
-                {raritySummary && (
-                  <div className={`text-sm mt-1 ${isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                    <span className="font-medium">Не хватает карт:</span>
-                    {RARITY_KEYS.map(r => {
-                      const count = raritySummary.result[r] || 0;
-                      return count > 0 ? (
-                        <span key={r} className="ml-2">
-                          {r}: {count}
-                        </span>
-                      ) : null;
-                    })}
-                    {Object.values(wildcards).some(w => w > 0) && (
-                      <span className="ml-2 text-green-600">(с учётом джокеров)</span>
-                    )}
-                  </div>
+                <UpgradeCopyCoverage {...diagnosis} />
+                {diagnosis.goldDeficit > 0 && <p className="text-sm">Не хватает золота: {diagnosis.goldDeficit.toLocaleString('ru-RU')}</p>}
+                {!diagnosis.goldDeficit && !diagnosis.uncoveredCopies && diagnosis.details.every(item => item.rarity) && (
+                  <p className="text-sm text-green-700 dark:text-green-300">Прокачка уровней покрыта известными ресурсами.</p>
                 )}
               </div>
             </div>
 
             <p className={`text-sm mb-4 ${isDark ? 'text-gray-400' : 'text-gray-500'}`}>
-              Для открытия карты нужна её первая копия.
+              Для открытия карты нужна её первая копия. Джокеры могут покрыть следующие уровни после открытия.
             </p>
             {diagnosis.details.some(item => item.rarity === null) && (
               <p className="mb-4 text-sm text-orange-700 dark:text-orange-300">
@@ -326,14 +226,13 @@ const Diagnose: React.FC = () => {
 
                 <p className="my-2 text-sm">Запасы распределяются по порядку: сначала более низкие уровни, затем более дешёвые переходы на том же уровне.</p>
                 <h3 className="mt-3 font-semibold text-green-700 dark:text-green-300">
-                  {goldBalance === null ? 'Хватает копий' : 'Можно улучшить'} · {availableSteps.length}
+                  Можно улучшить · {availableSteps.length}
                 </h3>
-                {goldBalance === null && <p className="text-sm">Укажите баланс золота, чтобы проверить, какие шаги доступны сейчас.</p>}
                 <ol className="list-decimal space-y-1 pl-6 text-sm">
                   {availableSteps.map(step => (
                     <li key={`${step.card}-${step.level}`}>
                       {step.card} → ур. {step.level} · {step.gold.toLocaleString('ru-RU')} золота ·
-                      {' '}копий: {step.cardCopiesUsed}{step.wildcardsUsed > 0 && ` + джокеров: ${step.wildcardsUsed}`}
+                      {' '}покрыто джокерами: {step.wildcardsUsed}
                     </li>
                   ))}
                 </ol>
@@ -345,10 +244,10 @@ const Diagnose: React.FC = () => {
                         <li key={`${step.card}-${step.level}`}>
                           {step.card} → ур. {step.level} · {step.status === 'previous-step'
                             ? 'Сначала выполните предыдущий шаг'
-                            : `Не хватает ${[
-                              step.missingCopies ? `копий: ${step.missingCopies}` : '',
-                              step.missingGold ? `золота: ${step.missingGold.toLocaleString('ru-RU')}` : '',
-                            ].filter(Boolean).join(', ')}`}
+                            : ([
+                              step.uncoveredCopies ? `Не покрыто джокерами: ${step.uncoveredCopies}` : '',
+                              step.missingGold ? `Не хватает золота: ${step.missingGold.toLocaleString('ru-RU')}` : '',
+                            ].filter(Boolean).join(' · '))}
                         </li>
                       ))}
                     </ol>
@@ -367,11 +266,11 @@ const Diagnose: React.FC = () => {
               >
                 {showDetails ? (
                   <>
-                    <ChevronUpIcon className="w-4 h-4" /> Скрыть запасы копий и стоимость по картам
+                    <ChevronUpIcon className="w-4 h-4" /> Скрыть требования
                   </>
                 ) : (
                   <>
-                    <ChevronDownIcon className="w-4 h-4" /> Указать запасы копий
+                    <ChevronDownIcon className="w-4 h-4" /> Требования по картам
                   </>
                 )}
               </button>
@@ -400,14 +299,11 @@ const Diagnose: React.FC = () => {
                         }`}>Нужно золота</th>
                         <th className={`px-4 py-2 text-left text-xs font-medium uppercase ${
                           isDark ? 'text-gray-400' : 'text-gray-500'
-                        }`}>Карт нужно</th>
-                        <th className={`px-4 py-2 text-left text-xs font-medium uppercase ${
-                          isDark ? 'text-gray-400' : 'text-gray-500'
-                        }`}>Карт есть</th>
+                        }`}>Требуется копий</th>
                       </tr>
                     </thead>
                     <tbody className={`divide-y ${isDark ? 'divide-gray-700' : 'divide-gray-200'}`}>
-                      {diagnosis.details.map((item, idx) => (
+                      {details.map((item, idx) => (
                         <tr key={idx} className={item.neededGold > 0 ? (isDark ? 'bg-gray-700/50' : 'bg-yellow-50') : ''}>
                           <td className="px-4 py-2 flex items-center gap-2">
                             <CardIcon cardId={item.card} className="w-8 h-8" />
@@ -418,22 +314,7 @@ const Diagnose: React.FC = () => {
                             {!item.rarity ? 'Нет данных' : formatNumber(item.neededGold)}
                           </td>
                           <td className={`px-4 py-2 text-sm font-mono ${isDark ? 'text-gray-300' : ''}`}>
-                            {!item.rarity ? 'Нет данных' : Math.max(0, item.neededCards - item.cardsHave)}
-                          </td>
-                          <td className="px-4 py-2">
-                            <input
-                              type="number"
-                              min="0"
-                              aria-label={`Копий карты ${item.card} в запасе`}
-                              value={item.cardsHave}
-                              onChange={(e) => handleCardsHaveChange(idx, e.target.value)}
-                              className={`w-16 rounded px-1 py-1 text-sm text-center transition-colors duration-200 ${
-                                isDark
-                                  ? 'bg-gray-600 border-gray-500 text-gray-200 focus:border-blue-400'
-                                  : 'bg-white border-gray-300 text-gray-900 focus:border-blue-500'
-                              } border focus:outline-none focus:ring-2 focus:ring-blue-500/50`}
-                              placeholder="0"
-                            />
+                            {!item.rarity ? 'Нет данных' : item.neededCards}
                           </td>
                         </tr>
                       ))}
@@ -447,7 +328,6 @@ const Diagnose: React.FC = () => {
                         </td>
                         <td className={`px-4 py-2 ${isDark ? 'text-gray-200' : ''}`}>
                         </td>
-                        <td className="px-4 py-2"></td>
                       </tr>
                     </tfoot>
                   </table>

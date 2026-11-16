@@ -9,6 +9,9 @@ import { findClanWarCombinations } from '../services/clanWarCombinations';
 import { calculatePlayerBonus, fixDeckTemplate } from '../services/deckService';
 import { compareMetaRecommendations, scoreFilteredDeck } from '../services/filteredRecommendations';
 import { getDeckAvailability } from '../services/deckAvailability';
+import { getRequiredForms, rankBudgetDecks } from '../services/budgetUpgrade';
+import { rankSharedCardUpgrades } from '../services/sharedCardUpgrades';
+import { readPlayerResources, summarizeUpgradeResources } from '../services/playerResources';
 
 const cardFilterError = 'Card filters must be arrays of card IDs';
 const cardFilter = z.array(z.string({ error: cardFilterError }), { error: cardFilterError }).default([]);
@@ -73,6 +76,37 @@ const normalizeLimit = (value: number | string | undefined, fallback: number): n
 
 export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
   const router = Router();
+
+  router.post('/upgrade-shared-cards', async (req, res) => {
+    const { playerId, targetLevel, priority = 'target' } = req.body ?? {};
+    if (typeof playerId !== 'string' || !playerId || !isUpgradeTarget(targetLevel) ||
+        (priority !== 'target' && priority !== 'budget')) {
+      return res.status(400).json({ error: 'Выберите игровой аккаунт, целевой уровень и приоритет' });
+    }
+    const player = await prisma.player.findFirst({ where: { id: playerId, ownerId: userId(res) } });
+    if (!player) return res.status(404).json({ error: 'Игровой аккаунт не найден' });
+    const decks = await prisma.metaDeck.findMany({
+      where: { isActive: true }, orderBy: { name: 'asc' },
+      select: { id: true, name: true, cards: true, slot2Type: true },
+    });
+    res.json(rankSharedCardUpgrades(decks, player, targetLevel, priority));
+  });
+
+  router.post('/upgrade-budget', async (req, res) => {
+    const { playerName, targetLevel } = req.body ?? {};
+    if (typeof playerName !== 'string' || !playerName.trim() || !isUpgradeTarget(targetLevel)) {
+      return res.status(400).json({ error: 'Выберите игровой аккаунт и целевой уровень от 1 до 16' });
+    }
+    const player = await prisma.player.findUnique({
+      where: { ownerId_name: { ownerId: userId(res), name: playerName } },
+    });
+    if (!player) return res.status(404).json({ error: 'Игровой аккаунт не найден' });
+    const decks = await prisma.metaDeck.findMany({
+      where: { isActive: true }, orderBy: { name: 'asc' },
+      select: { id: true, name: true, cards: true, slot2Type: true },
+    });
+    res.json(rankBudgetDecks(decks, player, targetLevel));
+  });
 
   router.post('/recommend', async (req, res) => {
     try {
@@ -174,11 +208,13 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         (ranking === 'prospective' || d.missingCardsCount === 0));
       const sorted = filtered.sort((a, b) => b.score - a.score);
       const top = sorted.slice(0, limit);
+      const resources = ranking === 'prospective' ? readPlayerResources(player.resources) : null;
 
-      const decks = ranking === 'prospective' ? top.map(deck => {
-        const { details, totalGold } = diagnoseUpgrades(deck.cards, rawLevels, targetLevel);
+      const decks = resources ? top.map(deck => {
+        const { details, totalGold } = diagnoseUpgrades(deck.cards, rawLevels, targetLevel, true);
         return { ...deck, upgrade: {
-          targetLevel, totalGold, neededCopies: details.reduce((sum, card) => sum + card.neededCards, 0),
+          targetLevel, totalGold,
+          ...summarizeUpgradeResources(details, totalGold, resources),
         } };
       }) : top;
       res.json({ success: true, decks, playerName, totalDecks: filtered.length });
@@ -240,8 +276,10 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         });
       }
 
+      const planResources = targetLevel === undefined ? undefined : readPlayerResources(player.resources);
       function scoreDeck(deck: { id: string; name: string; cards: string; slot2Type?: string | null }) {
-        const { cards: fixedCards, slot2Type: fixedSlot2Type } = fixDeckTemplate(JSON.parse(deck.cards), deck.slot2Type ?? null);
+        const sourceCards: string[] = JSON.parse(deck.cards);
+        const { cards: fixedCards, slot2Type: fixedSlot2Type } = fixDeckTemplate(sourceCards, deck.slot2Type ?? null);
         const { bonus, slotStatus, changedCards } = calculatePlayerBonus(
           fixedCards,
           fixedSlot2Type,
@@ -265,13 +303,16 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
           winRate: undefined,
           slot2Type: fixedSlot2Type,
           slotStatus,
+          planTemplate: { cards: sourceCards, slot2Type: deck.slot2Type },
         };
       }
 
       const requiredCards = new Set(includeCards);
       const excluded = new Set(excludeCards.map(card => card === 'Log' ? 'The Log' : card));
       type Candidate = ReturnType<typeof scoreDeck>;
-      const isReady = (deck: Candidate) => deck.cards.length === 8 && deck.missingCount === 0;
+      const isReady = (deck: Candidate) => deck.cards.length === 8 && deck.missingCount === 0 &&
+        (!planResources || getRequiredForms(deck.planTemplate.cards.map(card => card === 'Log' ? 'The Log' : card),
+          deck.planTemplate.slot2Type ?? null, evolutions, filteredHeroes, planResources).every(form => form.unlocked));
       const passesExclusions = (deck: Candidate) =>
         !deck.cards.some(card => excluded.has(card === 'Log' ? 'The Log' : card));
       const allSaved = savedDecks.map(scoreDeck);
@@ -298,7 +339,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         if ((bestCombinations[0]?.decks.length ?? 0) < 4) {
           const missingPinned = pinned.length < requiredSet.size;
           const pinnedCards = pinned.flatMap(deck => deck.cards.map(card => card === 'Log' ? 'The Log' : card));
-          if (missingPinned) message = 'В закреплённых колодах есть недостающие карты или неполный состав.';
+          if (missingPinned) message = 'Закреплённым колодам не хватает карт, особых форм или полного состава.';
           else if (new Set(pinnedCards).size < pinnedCards.length) message = 'Закреплённые колоды содержат одинаковые карты.';
           else if (pinned.some(deck => !passesExclusions(deck))) message = 'В закреплённой колоде есть исключённая карта.';
           else if (ready.length < 4) message = 'В пуле меньше четырёх колод со всеми доступными картами.';
@@ -324,11 +365,14 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
       }
 
       const plan = targetLevel === undefined ? {} : planClanWarUpgrade(
-        [...allSaved, ...metaCandidates], rawLevels, targetLevel, requiredSet, requiredCards, excluded,
+        [...allSaved, ...metaCandidates].map(({ deckId, name, planTemplate }) => ({ deckId, name, ...planTemplate })),
+        rawLevels, targetLevel, requiredSet, requiredCards, excluded, planResources, evolutions, filteredHeroes,
       );
       res.json({
         success: true,
-        combinations: bestCombinations,
+        combinations: bestCombinations.map(combo => ({
+          ...combo, decks: combo.decks.map(({ planTemplate, ...deck }) => deck),
+        })),
         totalCombinations: bestCombinations.length,
         foundSize: bestCombinations[0]?.decks.length ?? 0,
         playerName,
@@ -366,6 +410,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         targetLevel,
         totalGold,
         details,
+        ...summarizeUpgradeResources(details, totalGold, readPlayerResources(player.resources)),
       });
     } catch (error) {
       console.error(error);
@@ -494,7 +539,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
 
       const cards: string[] = JSON.parse(deck.cards);
       const levels: Record<string, number> = JSON.parse(player.levels);
-      const { details, totalGold } = diagnoseUpgrades(cards, levels, targetLevel);
+      const { details, totalGold } = diagnoseUpgrades(cards, levels, targetLevel, true);
 
       res.json({
         success: true,
@@ -502,6 +547,7 @@ export const createRecommendationsRouter = (prisma: PrismaClient): Router => {
         totalGold,
         details,
         targetLevel,
+        ...summarizeUpgradeResources(details, totalGold, readPlayerResources(player.resources)),
       });
     } catch (error) {
       console.error(error);

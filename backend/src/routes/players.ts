@@ -3,6 +3,7 @@ import axios from 'axios';
 import type { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { userId } from './auth';
+import { playerResourcesSchema, readPlayerResources } from '../services/playerResources';
 import { checkCollection, CollectionCheckError, readCollectionPreview } from '../services/collectionSync';
 
 function storedJson(schema: z.ZodType) {
@@ -87,7 +88,9 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
         where: { ownerId: userId(res) },
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       });
-      res.json(players.map(player => ({ ...player, collectionPreview: readCollectionPreview(player) })));
+      res.json(players.map(player => ({
+        ...player, resources: readPlayerResources(player.resources), collectionPreview: readCollectionPreview(player),
+      })));
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: 'Failed to fetch players' });
@@ -188,11 +191,31 @@ export const createPlayersRouter = (prisma: PrismaClient): Router => {
         where: { ownerId_name: { name, ownerId: userId(res) } },
       });
       if (!player) return res.status(404).json({ error: 'Player not found' });
-      res.json(player);
+      res.json({ ...player, resources: readPlayerResources(player.resources) });
     } catch (error) {
       console.error(error);
       res.status(500).json({ error: 'Failed to fetch player' });
     }
+  });
+
+  router.get('/players/:id/resources', async (req, res) => {
+    const player = await prisma.player.findFirst({
+      where: { id: req.params.id, ownerId: userId(res) },
+      select: { resources: true },
+    });
+    if (!player) return res.status(404).json({ error: 'Профиль не найден' });
+    res.json(readPlayerResources(player.resources));
+  });
+
+  router.put('/players/:id/resources', async (req, res) => {
+    const parsed = playerResourcesSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Укажите целые неотрицательные значения ресурсов' });
+    const { count } = await prisma.player.updateMany({
+      where: { id: req.params.id, ownerId: userId(res) },
+      data: { resources: JSON.stringify(parsed.data) },
+    });
+    if (!count) return res.status(404).json({ error: 'Профиль не найден' });
+    res.json(parsed.data);
   });
   
   router.delete('/players/:name', async (req, res) => {

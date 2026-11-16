@@ -8,6 +8,14 @@ import { calculateAverageElixir } from '../config/elixirCosts';
 import { parseDeckshopDecks } from '../services/deckshopParser';
 import { parseTopLadderDeck } from '../services/topLadderParser';
 import { z } from 'zod';
+import { checkDeckWrite, findDeckMatches, normalizeDeckCards } from '../services/deckDuplicates';
+
+const duplicateCheckInput = z.object({
+  cards: z.unknown(),
+  slot2Type: z.enum(['evo', 'hero']).nullish(),
+  editId: z.string().min(1).optional(),
+  autofill: z.boolean().optional(),
+});
 
 const deckProvenance = z.object({
   dataKind: z.enum(['match-stats', 'manual-tier', 'top-ladder', 'example']).nullable().optional(),
@@ -24,6 +32,16 @@ const GEMINI_MAX_ATTEMPTS_PER_MODEL = 2;
 const GEMINI_INITIAL_BACKOFF_MS = 500;
 const GEMINI_MAX_BACKOFF_MS = 4_000;
 const TOP_LADDER_CACHE_TTL_MS = 20 * 60 * 1000;
+
+const recognizedCardsSchema = z.array(z.object({
+  id: z.string(),
+  name: z.string(),
+  elixirCost: z.number(),
+  isEvolution: z.boolean(),
+  isHero: z.boolean(),
+})).length(8);
+const { $schema: _schema, ...geminiDeckSchema } = z.toJSONSchema(z.object({ cards: recognizedCardsSchema }));
+const readableCardsSchema = recognizedCardsSchema.unwrap().partial().array().length(8);
 
 interface TopLadderImportResult {
   success: boolean;
@@ -57,6 +75,8 @@ class GeminiTimeoutError extends Error {
     this.name = 'GeminiTimeoutError';
   }
 }
+
+class GeminiOutputError extends Error {}
 
 class GeminiUnavailableError extends Error {
   constructor(message: string) {
@@ -116,7 +136,7 @@ const callGemini = async (
   imageBase64: string,
   clientSignal: AbortSignal,
   timeoutMs: number
-): Promise<string> => {
+): Promise<z.infer<typeof readableCardsSchema>> => {
   if (clientSignal.aborted) throw new GeminiClientCancelledError();
   const attemptController = new AbortController();
   const abortAttempt = () => attemptController.abort();
@@ -142,8 +162,9 @@ const callGemini = async (
           }],
           generationConfig: {
             responseMimeType: 'application/json',
-            temperature: 0,
-            maxOutputTokens: 256,
+            responseJsonSchema: geminiDeckSchema,
+            temperature: 0.1,
+            maxOutputTokens: 4096,
           },
         }),
         signal: attemptController.signal,
@@ -161,18 +182,38 @@ const callGemini = async (
 
     const data = await response.json() as {
       candidates?: {
-        content?: { parts?: { text?: string }[] };
+        content?: { parts?: { text?: string; thought?: boolean }[] };
         finishReason?: string;
       }[];
+      usageMetadata?: { candidatesTokenCount?: number; thoughtsTokenCount?: number };
     };
-    const text = data.candidates?.[0]?.content?.parts
-      ?.map(part => part.text || '')
+    const candidate = data.candidates?.[0];
+    const rawText = candidate?.content?.parts
+      ?.filter(part => !part.thought)
+      .map(part => part.text || '')
       .join('')
-      .trim();
-    if (!text) {
-      throw new Error(`Gemini ${model} returned no text`);
+      .trim() ?? '';
+    const diagnostics = `finishReason=${candidate?.finishReason ?? 'unknown'}, characters=${rawText.length}, outputTokens=${data.usageMetadata?.candidatesTokenCount ?? 'unknown'}, thinkingTokens=${data.usageMetadata?.thoughtsTokenCount ?? 'unknown'}`;
+    if (candidate?.finishReason === 'MAX_TOKENS') {
+      throw new GeminiOutputError(`Truncated deck response (${diagnostics})`);
     }
-    return text;
+    const fencedJson = rawText.match(/\x60{3}(?:json)?\s*([\s\S]*?)\x60{3}/i)?.[1];
+    const text = (fencedJson ?? rawText).trim();
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(text);
+    } catch {
+      const embeddedJson = text.match(/\{[\s\S]*\}|\[[\s\S]*\]/)?.[0];
+      try {
+        decoded = embeddedJson === undefined ? undefined : JSON.parse(embeddedJson);
+      } catch {
+        throw new GeminiOutputError(`Invalid deck JSON (${diagnostics})`);
+      }
+    }
+    const cards = readableCardsSchema.safeParse(Array.isArray(decoded) ? decoded :
+      decoded && typeof decoded === 'object' && 'cards' in decoded ? decoded.cards : undefined);
+    if (!cards.success) throw new GeminiOutputError(`Expected eight card objects (${diagnostics})`);
+    return cards.data;
   } catch (error) {
     if (clientSignal.aborted) throw new GeminiClientCancelledError();
     if (attemptController.signal.aborted) throw new GeminiTimeoutError();
@@ -189,7 +230,7 @@ const recognizeWithGemini = async (
   mimeType: string,
   imageBase64: string,
   clientSignal: AbortSignal
-): Promise<{ text: string; model: string }> => {
+): Promise<z.infer<typeof readableCardsSchema>> => {
   const configuredModels = (process.env.GEMINI_MODELS || 'gemini-3.8-flash,gemini-3.5-flash-lite')
     .split(',')
     .map(model => model.trim())
@@ -200,6 +241,7 @@ const recognizeWithGemini = async (
   ].filter((model): model is string => Boolean(model)))];
   const deadline = Date.now() + GEMINI_TOTAL_TIMEOUT_MS;
   let lastError: unknown;
+  let outputError: GeminiOutputError | undefined;
 
   for (const model of models) {
     for (let attempt = 0; attempt < GEMINI_MAX_ATTEMPTS_PER_MODEL; attempt++) {
@@ -209,7 +251,7 @@ const recognizeWithGemini = async (
 
       const startedAt = Date.now();
       try {
-        const text = await callGemini(
+        const cards = await callGemini(
           model,
           apiKey,
           prompt,
@@ -219,7 +261,7 @@ const recognizeWithGemini = async (
           Math.min(GEMINI_ATTEMPT_TIMEOUT_MS, remainingMs)
         );
         console.log(`Gemini Vision recognition succeeded with ${model} in ${Date.now() - startedAt}ms`);
-        return { text, model };
+        return cards;
       } catch (error) {
         if (clientSignal.aborted) throw new GeminiClientCancelledError();
         lastError = error;
@@ -229,6 +271,10 @@ const recognizeWithGemini = async (
           `${status ? ` with HTTP ${status}` : ''}: ${error instanceof Error ? error.message.slice(0, 500) : String(error)}`
         );
 
+        if (error instanceof GeminiOutputError) {
+          outputError = error;
+          break;
+        }
         if (!isGeminiRetryable(error)) {
           if (error instanceof GeminiHttpError && [400, 404, 501].includes(error.status)) break;
           throw error;
@@ -249,6 +295,7 @@ const recognizeWithGemini = async (
     }
   }
 
+  if (outputError) throw outputError;
   const reason = lastError instanceof Error ? lastError.message : String(lastError ?? 'No Gemini response');
   throw new GeminiUnavailableError(reason);
 };
@@ -257,42 +304,29 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
   const router = Router();
 
   router.post('/meta-decks/check-duplicates', async (req, res) => {
-    const { cards } = req.body ?? {};
-    if (!Array.isArray(cards) || cards.length !== 8 ||
-        !cards.every(card => typeof card === 'string' && card.length > 0) ||
-        new Set(cards).size !== 8) {
-      return res.status(400).json({ error: 'Exactly 8 unique card IDs are required' });
+    const parsed = duplicateCheckInput.safeParse(req.body);
+    const cards = parsed.success && normalizeDeckCards(parsed.data.cards);
+    if (!parsed.success || !cards) {
+      return res.status(400).json({ error: 'Выберите восемь уникальных карт' });
     }
 
     try {
-      const select = { cards: true, name: true } as const;
-      const [metaDecks, savedDecks] = await Promise.all([
-        prisma.metaDeck.findMany({ select, orderBy: { name: 'asc' } }),
-        prisma.savedDeck.findMany({
-          where: { player: { ownerId: userId(res) } },
-          select,
-          orderBy: [{ player: { name: 'asc' } }, { createdAt: 'desc' }],
-        }),
-      ]);
-      const composition = JSON.stringify([...cards].sort());
-      const names = new Set<string>();
-      for (const deck of [...metaDecks, ...savedDecks]) {
-        let storedCards: unknown;
-        try {
-          storedCards = JSON.parse(deck.cards);
-        } catch {
-          continue;
-        }
-        if (Array.isArray(storedCards) && storedCards.length === 8 &&
-            storedCards.every(card => typeof card === 'string') &&
-            JSON.stringify(storedCards.sort()) === composition) {
-          names.add(deck.name);
-        }
-      }
-      res.json({ names: [...names] });
+      const matches = await findDeckMatches(prisma, userId(res), { ...parsed.data, cards });
+      if (!parsed.data.autofill) return res.json({ matches });
+
+      const exactIds = matches.filter(match => match.location === 'meta' && match.kind === 'exact').map(match => match.id);
+      const suggestedStats = exactIds.length === 0 ? null : await prisma.metaDeck.findFirst({
+        where: { id: { in: exactIds }, isActive: true, dataKind: 'match-stats', winRate: { gte: 0, lte: 100 } },
+        orderBy: [{ dataDate: 'desc' }, { sampleSize: 'desc' }, { id: 'asc' }],
+        select: {
+          id: true, name: true, categoryId: true, sourceId: true, sourceUrl: true,
+          tier: true, winRate: true, gameMode: true, dataDate: true, sampleSize: true,
+        },
+      });
+      res.json({ matches, suggestedStats });
     } catch (error) {
       console.error('Failed to check deck duplicates:', error);
-      res.status(500).json({ error: 'Failed to check deck duplicates' });
+      res.status(500).json({ error: 'Не удалось проверить совпадения' });
     }
   });
 
@@ -345,12 +379,12 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
       'Slot 2, when it shows three small wooden units with lightning, is Zappies, not Tesla. Tesla is a single ordinary-looking defensive building.',
       'Slot 6: the green flask/vine with goblin potion is Goblin Curse, catalog id exactly "Goblin Curse", name "Проклятие гоблинов" (also called "Гоблинская лоза" or "Лоза"), and it costs 3 elixir. Do not map this flask/vine card to Suspicious Bush.',
       'Suspicious Bush is a distinct card: identify it only when its separate tall bush/vine character artwork with eyes or a mask is clearly visible; its catalog id is "Suspicious Bush" and Russian name is "Подозрительный куст". Do not use the ambiguous short name "Лоза" for Suspicious Bush.',
-      'In slot 6, the Goblin Curse card costs exactly 3 elixir. Return the visible elixir cost as elixirCost for every card.',
+      'Return the visible elixir cost as elixirCost for every card.',
       'For slot 6 only, map "Goblin Curse", "Goblin Vine", "Гоблинская лоза", "Лоза", "Проклятие гоблинов", "Заклятие гоблинов", and "Гоблинская спасительница" to catalog id "Goblin Curse" when cost is 3. If the visual/name classifier says "Goblin Machine" but the slot-6 card visibly has the green goblin-potion flask and cost 3, map it to Goblin Curse. Goblin Machine remains separate everywhere else.',
       'Use the card artwork, not only OCR or rarity. Distinguish evolved artwork from the base card artwork.',
       'Distinguish champions and special cards by their actual artwork. In particular, do not identify Ronin as The Log.',
       'Choose each id only from this catalog. Do not invent card IDs.',
-      'Return only JSON matching {"cards":[{"id":"catalog id","name":"official card name","elixirCost":3,"isEvolution":false}]} with exactly 8 entries. elixirCost must be the numeric cost visible on the card screenshot.',
+      'Return only JSON matching {"cards":[{"id":"catalog id","name":"official card name","elixirCost":3,"isEvolution":false,"isHero":false}]} with exactly 8 entries. Set isHero only for a visible hero form, not just a hero-capable base card or a champion.',
       'Evolution detection rule: if a purple diamond evolution marker is visible above a card at the top of its frame, you MUST set isEvolution: true for that card, provided the catalog marks it as evolvable. Do not lose this marker because the card art resembles its base version.',
       'A deck can have at most 2 cards with isEvolution: true. Only count cards with the visible purple diamond marker; if more than 2 appear marked, keep true for the first two marked slots in row-major order and set false for the rest.',
       'For example, an evolution marker above slot 8 (such as an evolved Executioner) means slot 8 must be marked isEvolution: true.',
@@ -365,39 +399,13 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
     res.on('close', abortIfDisconnected);
 
     try {
-      const recognition = await recognizeWithGemini(
+      const recognized = await recognizeWithGemini(
         apiKey,
         prompt,
         mimeType,
         imageBase64,
         clientController.signal
       );
-      const responseText = recognition.text;
-      if (!responseText) {
-        return res.status(502).json({
-          error: 'Vision AI не вернул список карт',
-          details: 'В ответе Gemini отсутствует текст с результатом распознавания',
-        });
-      }
-
-      let parsedResponse: { cards?: { id?: unknown; name?: unknown; elixirCost?: unknown; isEvolution?: unknown }[] };
-      try {
-        parsedResponse = JSON.parse(responseText);
-      } catch {
-        console.error('Gemini Vision returned invalid JSON for deck recognition');
-        return res.status(502).json({
-          error: 'Не удалось разобрать результат Vision AI',
-          details: 'Сервис вернул ответ в неизвестном формате',
-        });
-      }
-
-      if (!Array.isArray(parsedResponse.cards) || parsedResponse.cards.length !== 8) {
-        return res.status(502).json({
-          error: 'Vision AI не распознал ровно 8 карт',
-          details: `Получено карт: ${Array.isArray(parsedResponse.cards) ? parsedResponse.cards.length : 0}`,
-        });
-      }
-
       const goblinCurse = ALL_CARDS_DATA.find(card => card.id === 'Goblin Curse');
       const goblinCurseAliases = new Set([
         'goblin curse',
@@ -415,7 +423,7 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
         'подозрительный куст',
         'bush',
       ]);
-      const recognizedCards = parsedResponse.cards.map((result, index) => {
+      const recognizedCards = recognized.map((result, index) => {
         const identifier = typeof result.id === 'string' ? result.id : '';
         const recognizedName = typeof result.name === 'string' ? result.name : '';
         const normalizedIdentifier = identifier.trim().toLocaleLowerCase();
@@ -425,7 +433,6 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
         const slotSixSuspiciousBushAlias = index === 5 &&
           (suspiciousBushAliases.has(normalizedIdentifier) || suspiciousBushAliases.has(normalizedName));
         const reportedElixirCost = typeof result.elixirCost === 'number' ? result.elixirCost : null;
-        if (index === 5 && reportedElixirCost !== 3) return null;
         const card = slotSixGoblinCurseAlias
           ? goblinCurse
           : slotSixSuspiciousBushAlias
@@ -446,7 +453,7 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
           elixirCost: reportedElixirCost,
           isEvolution: result.isEvolution === true && Boolean(card.evoFile),
           isChampion: Boolean(card.champion),
-          isHero: Boolean(card.heroFile),
+          isHero: result.isHero === true && Boolean(card.heroFile),
         };
       });
 
@@ -457,13 +464,6 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
         });
       }
       const cards = recognizedCards.filter((card): card is NonNullable<typeof card> => card !== null);
-      if (new Set(cards.map(card => card.id)).size !== 8) {
-        return res.status(502).json({
-          error: 'Vision AI распознал повторяющиеся карты',
-          details: 'Для колоды должны быть распознаны 8 разных карт',
-        });
-      }
-
       let evolutionCount = 0;
       for (const card of cards) {
         if (!card.isEvolution) continue;
@@ -475,6 +475,12 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
     } catch (error) {
       if (clientController.signal.aborted || res.destroyed) return;
       if (error instanceof GeminiClientCancelledError) return;
+      if (error instanceof GeminiOutputError) {
+        return res.status(502).json({
+          error: 'Не удалось разобрать результат Vision AI',
+          details: 'Gemini не вернул полный список из восьми карт. Повторите распознавание.',
+        });
+      }
       if (error instanceof GeminiUnavailableError || error instanceof GeminiTimeoutError || isGeminiRetryable(error)) {
         const details = error instanceof Error ? error.message : String(error);
         console.error(`Gemini Vision unavailable: ${details.slice(0, 500)}`);
@@ -845,10 +851,13 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
     try {
       const { id } = req.params;
       if (typeof id !== 'string') return res.status(400).json({ error: 'Invalid ID' });
-      const { name, cards, description, slot2Type, tier, categoryId, sourceId, sourceUrl } = req.body ?? {};
+      const { description, tier, categoryId, sourceId, sourceUrl } = req.body ?? {};
+      const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+      const draft = duplicateCheckInput.safeParse(req.body);
+      const cards = draft.success && normalizeDeckCards(draft.data.cards);
       const provenance = deckProvenance.safeParse(req.body);
       if (!provenance.success) return res.status(400).json({ error: 'Проверьте дату, режим, винрейт и размер выборки' });
-      if (!name || !cards || !Array.isArray(cards) || cards.length !== 8) {
+      if (!name || !cards || !draft.success) {
         return res.status(400).json({ error: 'Name and exactly 8 cards are required' });
       }
       let avgElixir: number;
@@ -860,24 +869,34 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
       if (!categoryId || !sourceId) {
         return res.status(400).json({ error: 'categoryId and sourceId are required' });
       }
-      const updated = await prisma.metaDeck.update({
-        where: { id },
-        data: {
-          name,
-          cards: JSON.stringify(cards),
-          ...(description !== undefined && { description: description || null }),
-          slot2Type: slot2Type || null,
-          tier: tier || null,
-          ...provenance.data,
-          winRate: provenance.data.winRate ?? null,
-          avgElixir,
-          categoryId,
-          sourceId,
-          sourceUrl: sourceUrl || null,
-        }
+      const result = await prisma.$transaction(async tx => {
+        const conflict = await checkDeckWrite(tx, userId(res), {
+          name, cards, slot2Type: draft.data.slot2Type ?? null, editId: id,
+        }, req.body?.duplicateConfirmation);
+        if (conflict) return { conflict };
+        return { deck: await tx.metaDeck.update({
+          where: { id },
+          data: {
+            name,
+            cards: JSON.stringify(cards),
+            ...(description !== undefined && { description: description || null }),
+            slot2Type: draft.data.slot2Type ?? null,
+            tier: tier || null,
+            ...provenance.data,
+            winRate: provenance.data.winRate ?? null,
+            avgElixir,
+            categoryId,
+            sourceId,
+            sourceUrl: sourceUrl || null,
+          }
+        }) };
       });
-      res.json(updated);
+      if (result.conflict) return res.status(409).json(result.conflict);
+      res.json(result.deck);
     } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
+        return res.status(409).json({ error: 'В мета-каталоге уже есть колода с таким названием' });
+      }
       console.error(error);
       res.status(500).json({ error: 'Failed to update deck' });
     }
@@ -991,10 +1010,13 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
   
   router.post('/meta-decks', requireCatalogOwner, async (req, res) => {
     try {
-      const { name, cards, description, slot2Type, tier, categoryId, sourceId, sourceUrl, externalId } = req.body ?? {};
+      const { description, tier, categoryId, sourceId, sourceUrl, externalId } = req.body ?? {};
+      const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+      const draft = duplicateCheckInput.safeParse(req.body);
+      const cards = draft.success && normalizeDeckCards(draft.data.cards);
       const provenance = deckProvenance.safeParse(req.body);
       if (!provenance.success) return res.status(400).json({ error: 'Проверьте дату, режим, винрейт и размер выборки' });
-      if (!name || !cards || !Array.isArray(cards) || cards.length !== 8) {
+      if (!name || !cards || !draft.success) {
         return res.status(400).json({ error: 'Name and exactly 8 cards are required' });
       }
       let avgElixir: number;
@@ -1006,28 +1028,38 @@ export const createMetaDecksRouter = (prisma: PrismaClient): Router => {
       if (!categoryId || !sourceId) {
         return res.status(400).json({ error: 'categoryId and sourceId are required' });
       }
-      const newDeck = await prisma.metaDeck.create({
-        data: {
-          name,
-          addedByUsername: res.locals.user.username,
-          cards: JSON.stringify(cards),
-          description: description || null,
-          slot2Type: slot2Type || null,
-          tier: tier || null,
-          ...provenance.data,
-          dataKind: provenance.data.dataKind === undefined && tier && provenance.data.winRate == null
-            ? 'manual-tier' : provenance.data.dataKind,
-          winRate: provenance.data.winRate ?? null,
-          avgElixir,
-          categoryId,
-          sourceId,
-          sourceUrl: sourceUrl || null,
-          externalId: externalId || null,
-          isActive: true,
-        }
+      const result = await prisma.$transaction(async tx => {
+        const conflict = await checkDeckWrite(tx, userId(res), {
+          name, cards, slot2Type: draft.data.slot2Type ?? null,
+        }, req.body?.duplicateConfirmation);
+        if (conflict) return { conflict };
+        return { deck: await tx.metaDeck.create({
+          data: {
+            name,
+            addedByUsername: res.locals.user.username,
+            cards: JSON.stringify(cards),
+            description: description || null,
+            slot2Type: draft.data.slot2Type ?? null,
+            tier: tier || null,
+            ...provenance.data,
+            dataKind: provenance.data.dataKind === undefined && tier && provenance.data.winRate == null
+              ? 'manual-tier' : provenance.data.dataKind,
+            winRate: provenance.data.winRate ?? null,
+            avgElixir,
+            categoryId,
+            sourceId,
+            sourceUrl: sourceUrl || null,
+            externalId: externalId || null,
+            isActive: true,
+          }
+        }) };
       });
-      res.json(newDeck);
+      if (result.conflict) return res.status(409).json(result.conflict);
+      res.json(result.deck);
     } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'P2002') {
+        return res.status(409).json({ error: 'В мета-каталоге уже есть колода с таким названием' });
+      }
       console.error(error);
       res.status(500).json({ error: 'Failed to create meta deck' });
     }
